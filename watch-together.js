@@ -423,6 +423,24 @@ const PAGE = `<!DOCTYPE html>
     border-radius: 8px; padding: 3px 10px; font-size: 12px; flex-shrink: 0;
   }
 
+  /* ---------- Now-playing title card ---------- */
+  .titleCard {
+    position: absolute; top: 16px; left: 16px; z-index: 7;
+    max-width: 62%;
+    background: rgba(21,18,29,0.55);
+    backdrop-filter: blur(6px);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 9px 16px;
+    pointer-events: none;
+    transition: opacity .6s ease;
+  }
+  .titleMain {
+    font-family: var(--serif); font-size: 17px; color: var(--ink);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .titleSub { font-size: 12px; color: var(--lamp-soft); margin-top: 2px; }
+
   /* ---------- Session recap ---------- */
   .recapOverlay {
     position: fixed; inset: 0; z-index: 40;
@@ -451,7 +469,7 @@ const PAGE = `<!DOCTYPE html>
 
   /* ---------- Ambient dimming when idle (movie-theater feel) ---------- */
   .topbar, .dock { transition: opacity .6s ease; }
-  #app.idle .topbar, #app.idle .dock, #app.idle .fsBar, #app.idle .calls { opacity: 0.2; }
+  #app.idle .topbar, #app.idle .dock, #app.idle .fsBar, #app.idle .calls, #app.idle .titleCard { opacity: 0.2; }
   #app.idle .topbar:hover, #app.idle .dock:hover, #app.idle .fsBar:hover, #app.idle .calls:hover { opacity: 1; }
 </style>
 </head>
@@ -493,6 +511,10 @@ const PAGE = `<!DOCTYPE html>
           <div class="warnBar hidden" id="warnBar">
             <span id="warnText"></span>
             <button id="warnClose" type="button">Dismiss</button>
+          </div>
+          <div class="titleCard hidden" id="titleCard">
+            <div class="titleMain" id="titleMain"></div>
+            <div class="titleSub hidden" id="titleSub"></div>
           </div>
           <video id="video" playsinline controls></video>
 
@@ -885,11 +907,70 @@ const PAGE = `<!DOCTYPE html>
     $('warnBar').classList.add('hidden');
     video.src = URL.createObjectURL(f);
     $('empty').classList.add('hidden');
+    showTitleCard(f.name);
     // Our partner may already be mid-movie; ask them where we should be.
     send({ type: 'request-sync' });
   }
   $('file').addEventListener('change', onPick);
   $('file2').addEventListener('change', onPick);
+
+  // ===================================================================
+  //  NOW-PLAYING TITLE — cleaned up from the raw filename, TV shows get
+  //  their season/episode pulled out too.
+  // ===================================================================
+  var JUNK_TOKENS = /\b(1080p|720p|2160p|4k|480p|webrip|web[- .]?dl|blu[- .]?ray|brrip|bdrip|dvdrip|hdtv|hdrip|hdcam|camrip|x264|x265|h264|h265|hevc|avc|aac(?:2\.0)?|ac3|dts(?:-hd)?|5\.1|7\.1|10bit|8bit|repack|proper|extended|remastered|uncut|unrated|director'?s|theatrical|cut|multi|dual audio|subbed|dubbed|internal|limited|complete)\b/gi;
+
+  function stripJunk(str) {
+    var s = str.replace(/-[A-Za-z0-9]{2,15}$/, '');    // trailing -RELEASEGROUP
+    s = s.replace(/[\[\(\{].*?[\]\)\}]/g, ' ');         // bracketed/parenthetical notes
+    s = s.replace(JUNK_TOKENS, ' ');
+    s = s.replace(/[._]+/g, ' ');
+    s = s.replace(/-+/g, ' ');
+    s = s.replace(/\s{2,}/g, ' ').trim();
+    return s;
+  }
+
+  // Scene releases are often ALL CAPS or all lowercase with no real casing —
+  // tidy those up, but leave a filename that already has mixed case alone.
+  function tidyCase(s) {
+    if (!s || (s !== s.toUpperCase() && s !== s.toLowerCase())) return s;
+    var minor = { a: 1, an: 1, the: 1, of: 1, in: 1, on: 1, at: 1, to: 1, and: 1, or: 1, for: 1, vs: 1 };
+    return s.toLowerCase().split(' ').map(function (w, i) {
+      if (!w) return w;
+      return (i > 0 && minor[w]) ? w : w.charAt(0).toUpperCase() + w.slice(1);
+    }).join(' ');
+  }
+
+  function parseMediaTitle(filename) {
+    var name = filename.replace(/\.[a-z0-9]{2,5}$/i, '');                       // drop extension
+    name = name.replace(/^\s*www\.[^\s]+?\.[a-z]{2,4}\s*[-–—]\s*/i, '');        // leading site plug
+
+    var tv = name.match(/^(.*?)[\s._-]*[Ss](\d{1,2})[\s._-]*[Ee](\d{1,3})\b/) ||
+             name.match(/^(.*?)[\s._-]*(\d{1,2})x(\d{2,3})\b/);
+    if (tv) {
+      return { type: 'tv', title: tidyCase(stripJunk(tv[1])) || filename, season: parseInt(tv[2], 10), episode: parseInt(tv[3], 10) };
+    }
+
+    var withYear = name.match(/^(.*?)[\s._(\[-]((?:19|20)\d{2})\b/);
+    if (withYear) {
+      return { type: 'movie', title: tidyCase(stripJunk(withYear[1])) || filename, year: withYear[2] };
+    }
+
+    return { type: 'movie', title: tidyCase(stripJunk(name)) || name, year: null };
+  }
+
+  function showTitleCard(filename) {
+    var info = parseMediaTitle(filename);
+    $('titleMain').textContent = (info.type === 'movie' && info.year) ? (info.title + ' (' + info.year + ')') : info.title;
+    var sub = $('titleSub');
+    if (info.type === 'tv') {
+      sub.textContent = 'Season ' + info.season + ' · Episode ' + info.episode;
+      sub.classList.remove('hidden');
+    } else {
+      sub.classList.add('hidden');
+    }
+    $('titleCard').classList.remove('hidden');
+  }
 
   // Warn if the two files are probably different cuts/versions of the movie.
   video.addEventListener('loadedmetadata', function () {
