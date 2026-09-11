@@ -174,14 +174,13 @@ const PAGE = `<!DOCTYPE html>
   }
 
   /* ---------- Text chat (fallback if voice/video won't connect) ---------- */
+  /* A real sidebar that shares the room with the movie instead of covering it. */
+  .middle { display: flex; flex: 1; min-height: 0; }
   .chatPanel {
-    position: fixed; top: 0; right: 0; bottom: 0;
-    width: 320px; max-width: 100vw;
+    width: 320px; max-width: 40vw; flex-shrink: 0;
     background: linear-gradient(180deg, var(--panel), var(--night-2));
     border-left: 1px solid var(--line);
     display: flex; flex-direction: column;
-    z-index: 30;
-    box-shadow: -30px 0 60px -30px rgba(0,0,0,0.7);
   }
   .chatHead {
     display: flex; align-items: center; justify-content: space-between;
@@ -208,11 +207,17 @@ const PAGE = `<!DOCTYPE html>
     color: #2a1a06; background: linear-gradient(180deg, var(--lamp-soft), var(--lamp));
   }
   @media (max-width: 620px) {
-    .chatPanel { width: 100vw; }
+    /* No room to squeeze the video on a phone — chat covers it instead, same as before. */
+    .chatPanel {
+      position: fixed; inset: 0; z-index: 30;
+      width: auto; max-width: 100vw;
+      box-shadow: -30px 0 60px -30px rgba(0,0,0,0.7);
+    }
   }
 
   .stage {
     flex: 1;
+    min-width: 0;
     position: relative;
     display: grid;
     place-items: center;
@@ -444,38 +449,49 @@ const PAGE = `<!DOCTYPE html>
       <div class="together"><span class="label">together for</span><span id="timer">00:00</span></div>
     </div>
 
-    <div class="stage">
-      <div class="screen">
-        <div class="warnBar hidden" id="warnBar">
-          <span id="warnText"></span>
-          <button id="warnClose" type="button">Dismiss</button>
-        </div>
-        <video id="video" playsinline controls></video>
+    <div class="middle">
+      <div class="stage">
+        <div class="screen">
+          <div class="warnBar hidden" id="warnBar">
+            <span id="warnText"></span>
+            <button id="warnClose" type="button">Dismiss</button>
+          </div>
+          <video id="video" playsinline controls></video>
 
-        <div class="empty" id="empty">
-          <div class="inner">
-            <h2>Load your movie</h2>
-            <p>Pick your own copy from this device. It stays on your machine — only play, pause and seek are shared.</p>
-            <label class="load">Choose file<input id="file" type="file" accept="video/*" hidden></label>
+          <div class="empty" id="empty">
+            <div class="inner">
+              <h2>Load your movie</h2>
+              <p>Pick your own copy from this device. It stays on your machine — only play, pause and seek are shared.</p>
+              <label class="load">Choose file<input id="file" type="file" accept="video/*" hidden></label>
+            </div>
+          </div>
+
+          <div class="tap hidden" id="tap">
+            <button id="tapBtn">Tap to sync ▶</button>
           </div>
         </div>
 
-        <div class="tap hidden" id="tap">
-          <button id="tapBtn">Tap to sync ▶</button>
+        <div class="calls">
+          <div class="cam" id="remoteWrap">
+            <video id="remoteVideo" autoplay playsinline></video>
+            <div class="off" id="remoteOff">◍</div>
+            <div class="tag" id="remoteTag">Partner</div>
+          </div>
+          <div class="cam local" id="localWrap">
+            <video id="localVideo" autoplay playsinline muted></video>
+            <div class="off" id="localOff">You</div>
+            <div class="tag">You</div>
+          </div>
         </div>
       </div>
 
-      <div class="calls">
-        <div class="cam" id="remoteWrap">
-          <video id="remoteVideo" autoplay playsinline></video>
-          <div class="off" id="remoteOff">◍</div>
-          <div class="tag" id="remoteTag">Partner</div>
-        </div>
-        <div class="cam local" id="localWrap">
-          <video id="localVideo" autoplay playsinline muted></video>
-          <div class="off" id="localOff">You</div>
-          <div class="tag">You</div>
-        </div>
+      <div class="chatPanel hidden" id="chatPanel">
+        <div class="chatHead"><span>Chat</span><button id="chatClose" type="button">✕</button></div>
+        <div class="chatLog" id="chatLog"></div>
+        <form class="chatForm" id="chatForm">
+          <input id="chatInput" type="text" placeholder="Say something…" autocomplete="off" maxlength="500" />
+          <button type="submit">Send</button>
+        </form>
       </div>
     </div>
 
@@ -491,15 +507,6 @@ const PAGE = `<!DOCTYPE html>
         <button data-e="🥹">🥹</button>
         <button data-e="👏">👏</button>
       </div>
-    </div>
-
-    <div class="chatPanel hidden" id="chatPanel">
-      <div class="chatHead"><span>Chat</span><button id="chatClose" type="button">✕</button></div>
-      <div class="chatLog" id="chatLog"></div>
-      <form class="chatForm" id="chatForm">
-        <input id="chatInput" type="text" placeholder="Say something…" autocomplete="off" maxlength="500" />
-        <button type="submit">Send</button>
-      </form>
     </div>
   </section>
 
