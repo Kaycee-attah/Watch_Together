@@ -918,15 +918,19 @@ const PAGE = `<!DOCTYPE html>
   //  NOW-PLAYING TITLE — cleaned up from the raw filename, TV shows get
   //  their season/episode pulled out too.
   // ===================================================================
-  var JUNK_TOKENS = /\b(1080p|720p|2160p|4k|480p|webrip|web[- .]?dl|blu[- .]?ray|brrip|bdrip|dvdrip|hdtv|hdrip|hdcam|camrip|x264|x265|h264|h265|hevc|avc|aac(?:2\.0)?|ac3|dts(?:-hd)?|5\.1|7\.1|10bit|8bit|repack|proper|extended|remastered|uncut|unrated|director'?s|theatrical|cut|multi|dual audio|subbed|dubbed|internal|limited|complete)\b/gi;
+  // Note: this whole page is a JS template literal on the server, so every
+  // backslash below is doubled — a single \b would otherwise get silently
+  // eaten (or turned into a real backspace character) before it ever
+  // reaches the browser.
+  var JUNK_TOKENS = /\\b(1080p|720p|2160p|4k|480p|webrip|web[- .]?dl|blu[- .]?ray|brrip|bdrip|dvdrip|hdtv|hdrip|hdcam|camrip|x264|x265|h264|h265|hevc|avc|aac(?:2\\.0)?|ac3|dts(?:-hd)?|5\\.1|7\\.1|10bit|8bit|repack|proper|extended|remastered|uncut|unrated|director'?s|theatrical|cut|multi|dual audio|subbed|dubbed|internal|limited|complete)\\b/gi;
 
   function stripJunk(str) {
     var s = str.replace(/-[A-Za-z0-9]{2,15}$/, '');    // trailing -RELEASEGROUP
-    s = s.replace(/[\[\(\{].*?[\]\)\}]/g, ' ');         // bracketed/parenthetical notes
+    s = s.replace(/[\\[\\(\\{].*?[\\]\\)\\}]/g, ' ');   // bracketed/parenthetical notes
     s = s.replace(JUNK_TOKENS, ' ');
     s = s.replace(/[._]+/g, ' ');
     s = s.replace(/-+/g, ' ');
-    s = s.replace(/\s{2,}/g, ' ').trim();
+    s = s.replace(/\\s{2,}/g, ' ').trim();
     return s;
   }
 
@@ -942,16 +946,16 @@ const PAGE = `<!DOCTYPE html>
   }
 
   function parseMediaTitle(filename) {
-    var name = filename.replace(/\.[a-z0-9]{2,5}$/i, '');                       // drop extension
-    name = name.replace(/^\s*www\.[^\s]+?\.[a-z]{2,4}\s*[-–—]\s*/i, '');        // leading site plug
+    var name = filename.replace(/\\.[a-z0-9]{2,5}$/i, '');                       // drop extension
+    name = name.replace(/^\\s*www\\.[^\\s]+?\\.[a-z]{2,4}\\s*[-–—]\\s*/i, '');    // leading site plug
 
-    var tv = name.match(/^(.*?)[\s._-]*[Ss](\d{1,2})[\s._-]*[Ee](\d{1,3})\b/) ||
-             name.match(/^(.*?)[\s._-]*(\d{1,2})x(\d{2,3})\b/);
+    var tv = name.match(/^(.*?)[\\s._-]*[Ss](\\d{1,2})[\\s._-]*[Ee](\\d{1,3})\\b/) ||
+             name.match(/^(.*?)[\\s._-]*(\\d{1,2})x(\\d{2,3})\\b/);
     if (tv) {
       return { type: 'tv', title: tidyCase(stripJunk(tv[1])) || filename, season: parseInt(tv[2], 10), episode: parseInt(tv[3], 10) };
     }
 
-    var withYear = name.match(/^(.*?)[\s._(\[-]((?:19|20)\d{2})\b/);
+    var withYear = name.match(/^(.*?)[\\s._(\\[-]((?:19|20)\\d{2})\\b/);
     if (withYear) {
       return { type: 'movie', title: tidyCase(stripJunk(withYear[1])) || filename, year: withYear[2] };
     }
