@@ -51,6 +51,28 @@ const PAGE = `<!DOCTYPE html>
     --serif: 'Fraunces', Georgia, 'Times New Roman', serif;
     --sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   }
+  /* Cool "moonlight" palette — same tokens, different mood. Everything else
+     in the page is already built on these variables, so swapping them here
+     re-themes the whole app for free. */
+  :root[data-theme="moonlight"] {
+    --night: #0f1620;
+    --night-2: #131c28;
+    --panel: #1a2532;
+    --panel-2: #20303f;
+    --ink: #eaf1f7;
+    --muted: #8ea2b3;
+    --lamp: #6fb3e0;
+    --lamp-soft: #9cd0ef;
+    --rose: #8f9ff0;
+  }
+  .themeToggle {
+    position: fixed; bottom: 14px; left: 14px; z-index: 50;
+    width: 34px; height: 34px; border-radius: 50%;
+    background: var(--panel); border: 1px solid var(--line); color: var(--ink);
+    font-size: 15px; display: flex; align-items: center; justify-content: center;
+    transition: border-color .15s, background .3s ease;
+  }
+  .themeToggle:hover { border-color: rgba(243,181,106,0.5); }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
   body {
@@ -181,7 +203,10 @@ const PAGE = `<!DOCTYPE html>
     background: linear-gradient(180deg, var(--panel), var(--night-2));
     border-left: 1px solid var(--line);
     display: flex; flex-direction: column;
+    overflow: hidden;
+    transition: width .3s ease, opacity .3s ease, border-color .3s ease;
   }
+  .chatPanel.closed { width: 0; opacity: 0; border-left-color: transparent; }
   .chatHead {
     display: flex; align-items: center; justify-content: space-between;
     padding: 14px 16px; border-bottom: 1px solid var(--line);
@@ -189,12 +214,25 @@ const PAGE = `<!DOCTYPE html>
   }
   .chatHead button { background: none; border: none; color: var(--muted); font-size: 18px; line-height: 1; }
   .chatHead button:hover { color: var(--ink); }
-  .chatLog { flex: 1; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
-  .msg { max-width: 82%; font-size: 14px; line-height: 1.4; }
+  .chatLog {
+    flex: 1; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px;
+    scrollbar-width: thin; scrollbar-color: rgba(243,181,106,0.4) transparent;
+  }
+  .chatLog::-webkit-scrollbar { width: 8px; }
+  .chatLog::-webkit-scrollbar-track { background: transparent; }
+  .chatLog::-webkit-scrollbar-thumb { background: rgba(243,181,106,0.35); border-radius: 100px; }
+  .chatLog::-webkit-scrollbar-thumb:hover { background: rgba(243,181,106,0.55); }
+  .msg { display: flex; gap: 8px; max-width: 88%; font-size: 14px; line-height: 1.4; }
+  .msg .content { display: flex; flex-direction: column; min-width: 0; }
   .msg .who { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
   .msg .bubble { padding: 9px 12px; border-radius: 14px; background: var(--panel-2); border: 1px solid var(--line); overflow-wrap: anywhere; }
-  .msg.mine { align-self: flex-end; }
-  .msg.mine .who { text-align: right; }
+  .msg .avatar {
+    width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0; margin-top: 2px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700; color: #241a30;
+  }
+  .msg.mine { align-self: flex-end; flex-direction: row-reverse; }
+  .msg.mine .content { align-items: flex-end; }
   .msg.mine .bubble { background: rgba(243,181,106,0.14); border-color: rgba(243,181,106,0.35); }
   .chatForm { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--line); }
   .chatForm input {
@@ -212,7 +250,9 @@ const PAGE = `<!DOCTYPE html>
       position: fixed; inset: 0; z-index: 30;
       width: auto; max-width: 100vw;
       box-shadow: -30px 0 60px -30px rgba(0,0,0,0.7);
+      transition: transform .3s ease, opacity .3s ease;
     }
+    .chatPanel.closed { width: auto; transform: translateX(100%); pointer-events: none; }
   }
 
   .stage {
@@ -246,6 +286,14 @@ const PAGE = `<!DOCTYPE html>
   .stage:fullscreen .screen, .stage:-webkit-full-screen .screen {
     max-width: none; width: 100%; height: 100%; aspect-ratio: unset; border-radius: 0; border: none;
   }
+  /* A soft theater vignette, only when the video fills the whole display —
+     the windowed 16:9 box already reads as "framed" without one. */
+  .screen::after {
+    content: ''; position: absolute; inset: 0; z-index: 4; pointer-events: none;
+    opacity: 0; transition: opacity .5s ease;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.55) 100%);
+  }
+  .stage:fullscreen .screen::after, .stage:-webkit-full-screen .screen::after { opacity: 1; }
   .floats-fs { position: absolute; inset: 0; pointer-events: none; z-index: 20; }
   .fsBar { display: none; }
   .stage:fullscreen .fsBar, .stage:-webkit-full-screen .fsBar {
@@ -269,6 +317,10 @@ const PAGE = `<!DOCTYPE html>
     border-radius: 16px;
     overflow: hidden;
     box-shadow: 0 20px 60px -20px rgba(0,0,0,0.7);
+    transition: transform .3s ease, opacity .3s ease;
+  }
+  .stage:fullscreen .chatPanel.closed, .stage:-webkit-full-screen .chatPanel.closed {
+    width: 320px; transform: translateX(120%); opacity: 0; pointer-events: none;
   }
 
   .empty {
@@ -475,6 +527,8 @@ const PAGE = `<!DOCTYPE html>
 </head>
 <body>
 
+  <button id="themeToggle" class="themeToggle" type="button" title="Switch theme">🌙</button>
+
   <!-- SETUP -->
   <section id="setup">
     <div class="card">
@@ -562,7 +616,7 @@ const PAGE = `<!DOCTYPE html>
         </div>
       </div>
 
-      <div class="chatPanel hidden" id="chatPanel">
+      <div class="chatPanel closed" id="chatPanel">
         <div class="chatHead"><span>Chat</span><button id="chatClose" type="button">✕</button></div>
         <div class="chatLog" id="chatLog"></div>
         <form class="chatForm" id="chatForm">
@@ -625,6 +679,21 @@ const PAGE = `<!DOCTYPE html>
   // Consistent-looking emoji across Windows/Mac/mobile instead of each OS's own font.
   var TWEMOJI_OPTS = { base: 'https://cdn.jsdelivr.net/npm/twemoji@14.0.2/assets/', folder: 'svg', ext: '.svg' };
   function twem(el) { if (window.twemoji) { twemoji.parse(el, TWEMOJI_OPTS); } }
+
+  // Two palettes sharing the same CSS variables, so swapping the attribute
+  // re-themes everything at once. Applied immediately so there's no flash.
+  function applyTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    $('themeToggle').textContent = theme === 'moonlight' ? '☀️' : '🌙';
+  }
+  var savedTheme = null;
+  try { savedTheme = localStorage.getItem('wt_theme'); } catch (e) {}
+  applyTheme(savedTheme === 'moonlight' ? 'moonlight' : 'lamp');
+  $('themeToggle').addEventListener('click', function () {
+    var next = (document.documentElement.getAttribute('data-theme') === 'moonlight') ? 'lamp' : 'moonlight';
+    applyTheme(next);
+    try { localStorage.setItem('wt_theme', next); } catch (e) {}
+  });
 
   // Remember the last room/name used on this device so reopening the page doesn't
   // require retyping — an invite link's room code still wins over this.
@@ -1157,13 +1226,13 @@ const PAGE = `<!DOCTYPE html>
   // ===================================================================
   function toggleChat() {
     var panel = $('chatPanel');
-    var willShow = panel.classList.contains('hidden');
-    panel.classList.toggle('hidden');
-    if (willShow) { clearUnread(); $('chatInput').focus(); }
+    var willShow = panel.classList.contains('closed');
+    panel.classList.toggle('closed');
+    if (willShow) { clearUnread(); playWhoosh(); $('chatInput').focus(); }
   }
   $('chatBtn').addEventListener('click', toggleChat);
   $('chatBtnFS').addEventListener('click', toggleChat);
-  $('chatClose').addEventListener('click', function () { $('chatPanel').classList.add('hidden'); });
+  $('chatClose').addEventListener('click', function () { $('chatPanel').classList.add('closed'); });
 
   $('chatForm').addEventListener('submit', function (e) {
     e.preventDefault();
@@ -1175,26 +1244,48 @@ const PAGE = `<!DOCTYPE html>
     input.value = '';
   });
 
+  // A deterministic color per person so their initial always looks the same.
+  var AVATAR_COLORS = ['#f3b56a', '#e87f95', '#8fb8e0', '#9ad1a0', '#c9a0e8', '#e0c26a'];
+  function nameColor(name) {
+    var hash = 0;
+    for (var i = 0; i < (name || '').length; i++) { hash = (hash * 31 + name.charCodeAt(i)) >>> 0; }
+    return AVATAR_COLORS[hash % AVATAR_COLORS.length];
+  }
+
   function addChatMessage(name, text, mine) {
     if (!state.firstChatMsg) { state.firstChatMsg = { name: mine ? state.name : (name || 'Partner'), text: text }; }
+    var displayName = mine ? 'You' : (name || 'Partner');
+    var colorName = mine ? state.name : (name || 'Partner');
     var log = $('chatLog');
+
     var wrap = document.createElement('div');
     wrap.className = 'msg' + (mine ? ' mine' : '');
+
+    var avatar = document.createElement('div');
+    avatar.className = 'avatar';
+    avatar.textContent = (colorName.trim().charAt(0) || '?').toUpperCase();
+    avatar.style.background = nameColor(colorName);
+
+    var content = document.createElement('div');
+    content.className = 'content';
     var who = document.createElement('div');
     who.className = 'who';
-    who.textContent = mine ? 'You' : (name || 'Partner');
+    who.textContent = displayName;
     var bubble = document.createElement('div');
     bubble.className = 'bubble';
     bubble.textContent = text;
-    wrap.appendChild(who);
-    wrap.appendChild(bubble);
+    content.appendChild(who);
+    content.appendChild(bubble);
+
+    wrap.appendChild(avatar);
+    wrap.appendChild(content);
     log.appendChild(wrap);
     twem(bubble);
     log.scrollTop = log.scrollHeight;
   }
 
   function bumpUnread() {
-    if (!$('chatPanel').classList.contains('hidden')) return;
+    if (!$('chatPanel').classList.contains('closed')) return;
     state.chatUnread = (state.chatUnread || 0) + 1;
     [$('chatBadge'), $('chatBadgeFS')].forEach(function (b) {
       b.textContent = state.chatUnread;
@@ -1293,25 +1384,31 @@ const PAGE = `<!DOCTYPE html>
 
   // A soft two-tone chime when your person arrives, so you notice even if the
   // tab isn't focused.
-  function playChime() {
+  // Shared tiny synth for all the app's little sound cues — no audio files needed.
+  function playTone(freqStart, freqEnd, duration, type, peakGain) {
     try {
       var Ctx = window.AudioContext || window.webkitAudioContext;
       if (!Ctx) return;
       var ctx = new Ctx();
       var o = ctx.createOscillator();
       var g = ctx.createGain();
-      o.type = 'sine';
-      o.frequency.setValueAtTime(660, ctx.currentTime);
-      o.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15);
+      o.type = type || 'sine';
+      o.frequency.setValueAtTime(freqStart, ctx.currentTime);
+      if (freqEnd && freqEnd !== freqStart) {
+        o.frequency.exponentialRampToValueAtTime(freqEnd, ctx.currentTime + duration * 0.7);
+      }
       g.gain.setValueAtTime(0.0001, ctx.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + 0.02);
-      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.5);
+      g.gain.exponentialRampToValueAtTime(peakGain || 0.18, ctx.currentTime + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + duration);
       o.connect(g); g.connect(ctx.destination);
       o.start();
-      o.stop(ctx.currentTime + 0.5);
-      setTimeout(function () { ctx.close(); }, 700);
+      o.stop(ctx.currentTime + duration);
+      setTimeout(function () { ctx.close(); }, (duration + 0.2) * 1000);
     } catch (e) {}
   }
+  function playChime() { playTone(660, 880, 0.5, 'sine', 0.2); }
+  function playPop() { playTone(880, 660, 0.12, 'sine', 0.15); }
+  function playWhoosh() { playTone(320, 900, 0.18, 'triangle', 0.1); }
 
   // A small souvenir card summarizing the session once your person disconnects.
   function showRecap() {
@@ -1348,6 +1445,7 @@ const PAGE = `<!DOCTYPE html>
   //  FLOATING REACTIONS
   // ===================================================================
   function floatReaction(emoji, who, mega) {
+    playPop();
     var el = document.createElement('div');
     el.className = 'float' + (mega ? ' mega' : '');
     el.style.left = (12 + Math.random() * 66) + '%';
