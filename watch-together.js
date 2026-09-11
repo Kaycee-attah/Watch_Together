@@ -519,10 +519,17 @@ const PAGE = `<!DOCTYPE html>
     background: linear-gradient(180deg, var(--lamp-soft), var(--lamp));
   }
 
-  /* ---------- Ambient dimming when idle (movie-theater feel) ---------- */
-  .topbar, .dock { transition: opacity .6s ease; }
-  #app.idle .topbar, #app.idle .dock, #app.idle .fsBar, #app.idle .calls, #app.idle .titleCard { opacity: 0.2; }
-  #app.idle .topbar:hover, #app.idle .dock:hover, #app.idle .fsBar:hover, #app.idle .calls:hover { opacity: 1; }
+  /* ---------- Ambient dimming when idle (movie-theater feel) ----------
+     Snap back to full visibility fast on any activity (short transition on
+     the base rule), but fade out slowly and completely once idle (long
+     transition on the .idle rule) — the browser always animates using the
+     duration on the state being transitioned *into*, so this pair gives an
+     asymmetric fast-in/slow-out fade for free. */
+  .topbar, .dock, .fsBar, .calls, .titleCard { transition: opacity .35s ease; }
+  #app.idle .topbar, #app.idle .dock, #app.idle .fsBar, #app.idle .calls, #app.idle .titleCard {
+    opacity: 0;
+    transition: opacity 5s ease;
+  }
 </style>
 </head>
 <body>
