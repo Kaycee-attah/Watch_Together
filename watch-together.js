@@ -235,7 +235,12 @@ const PAGE = `<!DOCTYPE html>
     overflow: hidden;
     box-shadow: 0 40px 90px -40px rgba(0,0,0,0.8);
   }
-  #video { width: 100%; height: 100%; background:#000; display:block; }
+  #video { width: 100%; height: 100%; background:#000; display:block; object-fit: contain; }
+
+  /* 'F' key fullscreen — let the screen fill the display instead of staying boxed at 16:9 */
+  .screen:fullscreen, .screen:-webkit-full-screen {
+    max-width: none; width: 100vw; height: 100vh; aspect-ratio: unset; border-radius: 0; border: none;
+  }
 
   .empty {
     position: absolute; inset: 0;
@@ -284,10 +289,11 @@ const PAGE = `<!DOCTYPE html>
   }
   .cam video { width:100%; height:100%; object-fit: cover; display:block; transform: scaleX(-1); }
   .cam .tag {
-    position:absolute; left:8px; bottom:7px;
+    position:absolute; left:8px; bottom:7px; right: 8px;
     font-size:11px; color:var(--ink);
     background: rgba(21,18,29,0.6); padding:2px 8px; border-radius:6px;
     backdrop-filter: blur(4px);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .cam .off {
     position:absolute; inset:0; display:grid; place-items:center;
@@ -571,7 +577,7 @@ const PAGE = `<!DOCTYPE html>
     rateResetTimer: null, sinceTs: 0, timerInt: null,
     reactionCount: 0, firstChatMsg: null,
     myLastReact: null, peerLastReact: null, comboFired: false, comboResetTimer: null,
-    myDuration: null, peerDuration: null
+    myDuration: null, peerDuration: null, peerName: null
   };
 
   var video = $('video');
@@ -649,10 +655,18 @@ const PAGE = `<!DOCTYPE html>
   }
 
   function handle(msg) {
+    // Learn the partner's real name from whichever message tells us first,
+    // so "Partner" only ever shows before we actually know who they are.
+    if (msg.fromName && msg.fromName !== state.peerName) {
+      state.peerName = msg.fromName;
+      updateRemoteTag();
+    }
+
     switch (msg.type) {
       case 'joined':
         state.myId = msg.id;
         state.initiator = msg.initiator;
+        if (msg.peerName) { state.peerName = msg.peerName; updateRemoteTag(); }
         if (msg.peers >= 2) { onBothHere(); }
         break;
 
@@ -663,6 +677,7 @@ const PAGE = `<!DOCTYPE html>
       case 'peer-joined':
         // Someone just arrived. The first person present drives the call
         // and shares the current playback position.
+        if (msg.name) { state.peerName = msg.name; updateRemoteTag(); }
         if (state.initiator) { makeOffer(); sendSnapshot(); }
         break;
 
@@ -881,6 +896,24 @@ const PAGE = `<!DOCTYPE html>
     }
   });
 
+  // 'F' toggles fullscreen for the movie (skipped while typing in a text field).
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'f' && e.key !== 'F') return;
+    var tag = document.activeElement && document.activeElement.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    if (!video.src) return;
+    e.preventDefault();
+    var screenEl = document.querySelector('.screen');
+    var isFull = document.fullscreenElement || document.webkitFullscreenElement;
+    if (!isFull) {
+      var req = screenEl.requestFullscreen || screenEl.webkitRequestFullscreen;
+      if (req) { req.call(screenEl); }
+    } else {
+      var exit = document.exitFullscreen || document.webkitExitFullscreen;
+      if (exit) { exit.call(document); }
+    }
+  });
+
   // Tap a reaction to send it; hold it down for a bigger "mega" version.
   var REACT_COMBO_WINDOW = 2500;
   var reactButtons = document.querySelectorAll('#reacts button');
@@ -1015,13 +1048,17 @@ const PAGE = `<!DOCTYPE html>
     $('statusText').textContent = text;
   }
 
+  function updateRemoteTag() {
+    $('remoteTag').textContent = state.peerName || 'Partner';
+  }
+
   function onBothHere() {
     if (state.connected) return;
     state.connected = true;
     state.reactionCount = 0;
     state.firstChatMsg = null;
-    setStatus(true, state.name === 'Partner' ? 'Connected' : 'Together now');
-    $('remoteTag').textContent = 'Partner';
+    setStatus(true, state.peerName ? ('Together with ' + state.peerName) : 'Connected');
+    updateRemoteTag();
     startTimer();
     playChime();
     if (document.hidden && window.Notification && Notification.permission === 'granted') {
@@ -1186,8 +1223,10 @@ wss.on('connection', (ws) => {
       ws.room = room;
       ws.name = (msg.name || 'Partner').slice(0, 40);
       const initiator = set.size === 0;     // first in the room drives the call
+      let peerName = null;
+      for (const peer of set) { peerName = peer.name; } // at most one existing peer
       set.add(ws);
-      ws.send(JSON.stringify({ type: 'joined', id: ws.id, initiator: initiator, peers: set.size }));
+      ws.send(JSON.stringify({ type: 'joined', id: ws.id, initiator: initiator, peers: set.size, peerName: peerName }));
       // tell the existing peer a new person arrived
       broadcast(room, { type: 'peer-joined', name: ws.name }, ws);
       broadcast(room, { type: 'presence', peers: set.size });
