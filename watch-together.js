@@ -413,6 +413,24 @@ const PAGE = `<!DOCTYPE html>
     backdrop-filter: blur(4px);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
+  /* At-a-glance presence — is she actually here right now, or is this a stale view? */
+  .presenceDot {
+    position: absolute; top: 8px; right: 8px; z-index: 2;
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--muted);
+    box-shadow: 0 0 0 2px rgba(21,18,29,0.65);
+    transition: background .3s ease;
+  }
+  .presenceDot.online {
+    background: #67d98b;
+    box-shadow: 0 0 0 2px rgba(21,18,29,0.65), 0 0 8px 1px rgba(103,217,139,0.7);
+  }
+  .presenceDot.reconnecting {
+    background: #f3b56a;
+    box-shadow: 0 0 0 2px rgba(21,18,29,0.65), 0 0 8px 1px rgba(243,181,106,0.7);
+    animation: dot-pulse 1s ease-in-out infinite;
+  }
+  @keyframes dot-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
   .cam .off {
     position:absolute; inset:0; display:grid; place-items:center;
     color: var(--muted); font-family:var(--serif); font-size: 30px;
@@ -607,6 +625,10 @@ const PAGE = `<!DOCTYPE html>
             <span id="warnText"></span>
             <button id="warnClose" type="button">Dismiss</button>
           </div>
+          <div class="warnBar hidden" id="audioBar">
+            <span>🔊 Your browser blocked your partner's audio/video until you interact — click to enable it.</span>
+            <button id="audioBarBtn" type="button">Enable</button>
+          </div>
           <div class="titleCard hidden" id="titleCard">
             <div class="titleMain" id="titleMain"></div>
             <div class="titleSub hidden" id="titleSub"></div>
@@ -634,6 +656,7 @@ const PAGE = `<!DOCTYPE html>
           <div class="cam" id="remoteWrap">
             <video id="remoteVideo" autoplay playsinline></video>
             <div class="off" id="remoteOff">◍</div>
+            <span class="presenceDot" id="remoteDot" title="Offline"></span>
             <div class="tag" id="remoteTag">Partner</div>
           </div>
           <div class="cam local" id="localWrap">
@@ -778,7 +801,7 @@ const PAGE = `<!DOCTYPE html>
     rateResetTimer: null, sinceTs: 0, timerInt: null,
     reactionCount: 0, firstChatMsg: null,
     myLastReact: null, peerLastReact: null, comboFired: false, comboResetTimer: null,
-    myDuration: null, peerDuration: null, peerName: null
+    myDuration: null, peerDuration: null, peerName: null, rejoinTimer: null
   };
 
   var video = $('video');
@@ -886,6 +909,16 @@ const PAGE = `<!DOCTYPE html>
         onAlone();
         break;
 
+      case 'full':
+        // A stale connection from an earlier session can make the room look
+        // full even though it's really just the two of you. This used to be
+        // silently ignored — retry automatically instead of leaving the UI
+        // looking stuck with no explanation.
+        setStatus(false, 'That room looks full — retrying…');
+        clearTimeout(state.rejoinTimer);
+        state.rejoinTimer = setTimeout(function () { send({ type: 'join', room: state.room, name: state.name }); }, 5000);
+        break;
+
       case 'pong': {
         var now = Date.now();
         var rtt = now - msg.t0;
@@ -941,7 +974,13 @@ const PAGE = `<!DOCTYPE html>
     }
     pc.onicecandidate = function (e) { if (e.candidate) send({ type: 'ice', candidate: e.candidate }); };
     pc.ontrack = function (e) {
-      $('remoteVideo').srcObject = e.streams[0];
+      var remoteEl = $('remoteVideo');
+      remoteEl.srcObject = e.streams[0];
+      // Unlike the local preview, this carries real audio and isn't muted —
+      // browsers routinely block autoplay of unmuted media that isn't tied
+      // to a fresh click, which would otherwise fail completely silently.
+      var p = remoteEl.play();
+      if (p && p.catch) { p.catch(function () { $('audioBar').classList.remove('hidden'); }); }
       var vt = e.streams[0].getVideoTracks()[0];
       showRemoteVideo(vt && vt.enabled);
       if (vt) {
@@ -1178,6 +1217,10 @@ const PAGE = `<!DOCTYPE html>
     }
   }
   $('warnClose').addEventListener('click', function () { $('warnBar').classList.add('hidden'); });
+  $('audioBarBtn').addEventListener('click', function () {
+    $('remoteVideo').play();
+    $('audioBar').classList.add('hidden');
+  });
 
   // ===================================================================
   //  YOUTUBE — an alternate source alongside local files. One of you
@@ -1566,6 +1609,18 @@ const PAGE = `<!DOCTYPE html>
   var DISCONNECT_GRACE_MS = 8000;
   var disconnectGrace = null;
 
+  // A small dot on the partner's webcam thumbnail so their online state is
+  // never ambiguous: solid green (here now), pulsing amber (a drop just
+  // happened, confirming), or gray (confirmed offline) — never stuck
+  // looking "online" when they've actually gone.
+  function setPresence(mode) {
+    var dot = $('remoteDot');
+    dot.classList.remove('online', 'reconnecting');
+    if (mode === 'online') { dot.classList.add('online'); dot.title = 'Online'; }
+    else if (mode === 'reconnecting') { dot.classList.add('reconnecting'); dot.title = 'Reconnecting…'; }
+    else { dot.title = 'Offline'; }
+  }
+
   function onBothHere() {
     if (disconnectGrace) {
       // They're back within the grace window — false alarm, resume as if nothing happened.
@@ -1573,6 +1628,7 @@ const PAGE = `<!DOCTYPE html>
       disconnectGrace = null;
       setStatus(true, state.peerName ? ('Together with ' + state.peerName) : 'Connected');
       updateRemoteTag();
+      setPresence('online');
       return;
     }
     if (state.connected) return;
@@ -1581,6 +1637,7 @@ const PAGE = `<!DOCTYPE html>
     state.firstChatMsg = null;
     setStatus(true, state.peerName ? ('Together with ' + state.peerName) : 'Connected');
     updateRemoteTag();
+    setPresence('online');
     startTimer();
     playChime();
     if (document.hidden && window.Notification && Notification.permission === 'granted') {
@@ -1590,12 +1647,14 @@ const PAGE = `<!DOCTYPE html>
   function onAlone() {
     if (!state.connected || disconnectGrace) return;
     setStatus(false, 'Reconnecting…');
+    setPresence('reconnecting');
     disconnectGrace = setTimeout(function () {
       disconnectGrace = null;
       showRecap();
       state.connected = false;
       setStatus(false, 'Waiting for your person…');
       showRemoteVideo(false);
+      setPresence('offline');
       stopTimer();
     }, DISCONNECT_GRACE_MS);
   }
@@ -1785,6 +1844,16 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ server });
 const rooms = new Map(); // roomId -> Set<ws>
 
+// Ping every open socket; anything that didn't pong since the last sweep is
+// dead and gets forcibly closed, which fires the same 'close' cleanup below.
+setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (ws.isAlive === false) { return ws.terminate(); }
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, 25000);
+
 function broadcast(room, obj, except) {
   const set = rooms.get(room);
   if (!set) return;
@@ -1797,6 +1866,15 @@ function broadcast(room, obj, except) {
 wss.on('connection', (ws) => {
   ws.id = Math.random().toString(36).slice(2, 10);
   ws.room = null;
+  // WebSocket 'close' only fires on a clean disconnect — a lost network, a
+  // closed laptop lid, or a crashed tab can leave a socket "open" from the
+  // server's point of view indefinitely, which would both (a) leave the
+  // other person's UI stuck looking like their partner is still here, and
+  // (b) block a real rejoin by making the room look falsely full. A
+  // ping/pong heartbeat (below) catches and terminates these within one
+  // or two cycles instead.
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
 
   ws.on('message', (buf) => {
     let msg;
@@ -1806,6 +1884,10 @@ wss.on('connection', (ws) => {
       const room = String(msg.room).slice(0, 120);
       let set = rooms.get(room);
       if (!set) { set = new Set(); rooms.set(room, set); }
+      // Prune anything that already failed a heartbeat before deciding the room is full.
+      for (const peer of set) {
+        if (peer.isAlive === false) { set.delete(peer); peer.terminate(); }
+      }
       if (set.size >= 2 && !set.has(ws)) {
         ws.send(JSON.stringify({ type: 'full' }));
         return;
