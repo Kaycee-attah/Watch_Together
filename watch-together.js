@@ -306,7 +306,10 @@ const PAGE = `<!DOCTYPE html>
   .calls {
     position: absolute; right: 26px; bottom: 26px; z-index: 6;
     display: flex; flex-direction: column; gap: 12px; align-items: flex-end;
+    cursor: grab; transition: opacity .6s ease;
+    touch-action: none;
   }
+  .calls.dragging { cursor: grabbing; transition: none; }
   .cam {
     width: 176px; aspect-ratio: 4/3;
     background: var(--panel-2);
@@ -448,8 +451,8 @@ const PAGE = `<!DOCTYPE html>
 
   /* ---------- Ambient dimming when idle (movie-theater feel) ---------- */
   .topbar, .dock { transition: opacity .6s ease; }
-  #app.idle .topbar, #app.idle .dock, #app.idle .fsBar { opacity: 0.12; }
-  #app.idle .topbar:hover, #app.idle .dock:hover, #app.idle .fsBar:hover { opacity: 1; }
+  #app.idle .topbar, #app.idle .dock, #app.idle .fsBar, #app.idle .calls { opacity: 0.2; }
+  #app.idle .topbar:hover, #app.idle .dock:hover, #app.idle .fsBar:hover, #app.idle .calls:hover { opacity: 1; }
 </style>
 </head>
 <body>
@@ -506,7 +509,7 @@ const PAGE = `<!DOCTYPE html>
           </div>
         </div>
 
-        <div class="calls">
+        <div class="calls" id="calls">
           <div class="cam" id="remoteWrap">
             <video id="remoteVideo" autoplay playsinline></video>
             <div class="off" id="remoteOff">◍</div>
@@ -533,6 +536,7 @@ const PAGE = `<!DOCTYPE html>
             <button data-e="👏">👏</button>
           </div>
           <button class="invite" id="chatBtnFS">💬 Chat<span class="badge hidden" id="chatBadgeFS">0</span></button>
+          <button class="ctrl" id="camsToggleFS">🫥 Hide cams</button>
         </div>
       </div>
 
@@ -550,6 +554,7 @@ const PAGE = `<!DOCTYPE html>
       <label class="ctrl primary">Load file<input id="file2" type="file" accept="video/*" hidden></label>
       <button class="ctrl" id="micBtn">🎙 Mic on</button>
       <button class="ctrl off" id="camBtn">📷 Camera off</button>
+      <button class="ctrl" id="camsToggle">🫥 Hide cams</button>
       <div class="reacts" id="reacts">
         <button data-e="❤️">❤️</button>
         <button data-e="😂">😂</button>
@@ -930,6 +935,27 @@ const PAGE = `<!DOCTYPE html>
   $('micBtnFS').addEventListener('click', toggleMic);
   $('camBtnFS').addEventListener('click', toggleCam);
 
+  // Webcam thumbnails are handy but can sit over part of the movie — 'V' (or
+  // either "Hide cams" button) clears them instantly; pressing again brings
+  // them back exactly where they were.
+  function setCallsToggleUI(hidden) {
+    var label = hidden ? '👀 Show cams' : '🫥 Hide cams';
+    [$('camsToggle'), $('camsToggleFS')].forEach(function (b) { b.textContent = label; });
+  }
+  function toggleCallsVisible() {
+    var hidden = $('calls').classList.toggle('hidden');
+    setCallsToggleUI(hidden);
+  }
+  $('camsToggle').addEventListener('click', toggleCallsVisible);
+  $('camsToggleFS').addEventListener('click', toggleCallsVisible);
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'v' && e.key !== 'V') return;
+    var tag = document.activeElement && document.activeElement.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    e.preventDefault();
+    toggleCallsVisible();
+  });
+
   // Left/right arrow keys fast-rewind / fast-forward the movie (10s per press).
   // Skipped while typing in a text field so it doesn't fight the room/name inputs.
   var SEEK_STEP = 10;
@@ -1262,6 +1288,62 @@ const PAGE = `<!DOCTYPE html>
     twem(el);
     setTimeout(function () { el.remove(); }, 2700);
   }
+
+  // ===================================================================
+  //  DRAGGABLE WEBCAM THUMBNAILS (drag them wherever isn't covering the movie)
+  // ===================================================================
+  (function () {
+    var callsEl = $('calls');
+    var dragging = false, offsetX = 0, offsetY = 0;
+
+    function applySavedPosition() {
+      try {
+        var pos = JSON.parse(localStorage.getItem('wt_camsPos') || 'null');
+        if (pos && isFinite(pos.leftPct) && isFinite(pos.topPct)) {
+          callsEl.style.left = pos.leftPct + '%';
+          callsEl.style.top = pos.topPct + '%';
+          callsEl.style.right = 'auto';
+          callsEl.style.bottom = 'auto';
+        }
+      } catch (e) {}
+    }
+    applySavedPosition();
+
+    callsEl.addEventListener('pointerdown', function (e) {
+      dragging = true;
+      callsEl.classList.add('dragging');
+      callsEl.setPointerCapture(e.pointerId);
+      var rect = callsEl.getBoundingClientRect();
+      offsetX = e.clientX - rect.left;
+      offsetY = e.clientY - rect.top;
+    });
+
+    callsEl.addEventListener('pointermove', function (e) {
+      if (!dragging) return;
+      var stageRect = stageEl.getBoundingClientRect();
+      var x = e.clientX - stageRect.left - offsetX;
+      var y = e.clientY - stageRect.top - offsetY;
+      x = Math.max(0, Math.min(x, stageEl.clientWidth - callsEl.offsetWidth));
+      y = Math.max(0, Math.min(y, stageEl.clientHeight - callsEl.offsetHeight));
+      callsEl.style.left = x + 'px';
+      callsEl.style.top = y + 'px';
+      callsEl.style.right = 'auto';
+      callsEl.style.bottom = 'auto';
+    });
+
+    function endDrag() {
+      if (!dragging) return;
+      dragging = false;
+      callsEl.classList.remove('dragging');
+      var leftPct = (callsEl.offsetLeft / stageEl.clientWidth) * 100;
+      var topPct = (callsEl.offsetTop / stageEl.clientHeight) * 100;
+      callsEl.style.left = leftPct + '%';
+      callsEl.style.top = topPct + '%';
+      try { localStorage.setItem('wt_camsPos', JSON.stringify({ leftPct: leftPct, topPct: topPct })); } catch (e) {}
+    }
+    callsEl.addEventListener('pointerup', endDrag);
+    callsEl.addEventListener('pointercancel', endDrag);
+  })();
 
   // ===================================================================
   //  AMBIENT DIMMING (theater-style — fades the chrome, not the movie, when idle)
