@@ -1,0 +1,983 @@
+/*
+ * Watch Together — a single-file prototype
+ * -----------------------------------------
+ * You and one other person each open your OWN local copy of a video file.
+ * Only the controls (play / pause / seek) and a voice+video call travel over
+ * the internet — the video itself never leaves either device. Tiny bandwidth,
+ * "sitting next to each other" feel.
+ *
+ * Run it:
+ *   npm init -y           (once, if you don't have a package.json)
+ *   npm install ws
+ *   node watch-together.js
+ *
+ * Then open http://localhost:3000 in two browsers/tabs. To watch with someone
+ * far away, deploy this file to any host that allows long-lived WebSocket
+ * connections (Railway, Render, Fly.io) and share the URL.
+ *
+ * Both people must have the same video file on their own machine.
+ */
+
+const http = require('http');
+const { WebSocketServer } = require('ws');
+
+const PORT = process.env.PORT || 3000;
+
+// ---------------------------------------------------------------------------
+// The client. Served as one HTML page. Kept as a plain template literal, so the
+// browser-side script below deliberately avoids backticks / ${} of its own.
+// ---------------------------------------------------------------------------
+const PAGE = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Watch Together</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --night: #15121d;
+    --night-2: #1c1828;
+    --panel: #221d31;
+    --panel-2: #2a2439;
+    --line: rgba(255,255,255,0.09);
+    --ink: #f2ece6;
+    --muted: #9c93ab;
+    --lamp: #f3b56a;        /* warm lamp glow */
+    --lamp-soft: #f6c88b;
+    --rose: #e87f95;        /* the heart moments */
+    --serif: 'Fraunces', Georgia, 'Times New Roman', serif;
+    --sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: var(--sans);
+    color: var(--ink);
+    background:
+      radial-gradient(1200px 700px at 78% -8%, rgba(243,181,106,0.16), transparent 60%),
+      radial-gradient(900px 600px at 8% 108%, rgba(232,127,149,0.12), transparent 60%),
+      var(--night);
+    -webkit-font-smoothing: antialiased;
+  }
+  button { font-family: inherit; cursor: pointer; }
+  .hidden { display: none !important; }
+
+  /* ---------- Setup screen ---------- */
+  #setup {
+    min-height: 100dvh;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+  }
+  .card {
+    width: 100%;
+    max-width: 430px;
+    background: linear-gradient(180deg, var(--panel), var(--night-2));
+    border: 1px solid var(--line);
+    border-radius: 22px;
+    padding: 40px 34px 34px;
+    box-shadow: 0 30px 80px -30px rgba(0,0,0,0.7);
+  }
+  .lamp-mark {
+    display: flex; align-items: center; gap: 10px;
+    color: var(--lamp); margin-bottom: 22px;
+  }
+  .lamp-mark .dot {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: var(--lamp);
+    box-shadow: 0 0 16px 3px rgba(243,181,106,0.7);
+  }
+  .lamp-mark span { font-size: 13px; letter-spacing: 0.14em; color: var(--muted); }
+  h1 {
+    font-family: var(--serif);
+    font-weight: 500;
+    font-size: 40px;
+    line-height: 1.05;
+    margin: 0 0 12px;
+    letter-spacing: -0.01em;
+  }
+  h1 .em { font-style: italic; color: var(--lamp-soft); }
+  .sub { color: var(--muted); font-size: 15px; line-height: 1.55; margin: 0 0 26px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 0 0 7px; }
+  .field { margin-bottom: 18px; }
+  input[type="text"] {
+    width: 100%;
+    background: var(--night);
+    border: 1px solid var(--line);
+    color: var(--ink);
+    font-size: 16px;
+    padding: 13px 15px;
+    border-radius: 13px;
+    outline: none;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  input[type="text"]:focus {
+    border-color: rgba(243,181,106,0.6);
+    box-shadow: 0 0 0 3px rgba(243,181,106,0.14);
+  }
+  .join {
+    width: 100%;
+    margin-top: 8px;
+    border: none;
+    border-radius: 13px;
+    padding: 15px;
+    font-size: 16px;
+    font-weight: 600;
+    color: #2a1a06;
+    background: linear-gradient(180deg, var(--lamp-soft), var(--lamp));
+    box-shadow: 0 12px 30px -10px rgba(243,181,106,0.55);
+    transition: transform .08s, filter .15s;
+  }
+  .join:hover { filter: brightness(1.04); }
+  .join:active { transform: translateY(1px); }
+  .fineprint { margin-top: 18px; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+
+  /* ---------- App screen ---------- */
+  #app { min-height: 100dvh; display: flex; flex-direction: column; }
+  .topbar {
+    display: flex; align-items: center; gap: 16px;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--line);
+    flex-wrap: wrap;
+  }
+  .brand { display:flex; align-items:center; gap:9px; color: var(--lamp); font-weight:600; font-size:15px; }
+  .brand .dot { width:8px; height:8px; border-radius:50%; background:var(--lamp); box-shadow:0 0 12px 2px rgba(243,181,106,0.7); }
+  .status { display:flex; align-items:center; gap:8px; color: var(--muted); font-size:13.5px; }
+  .status .pill { width:8px; height:8px; border-radius:50%; background:var(--muted); transition: background .3s; }
+  .status.on .pill { background:#67d98b; box-shadow:0 0 10px 1px rgba(103,217,139,0.6); }
+  .together {
+    margin-left: auto;
+    font-family: var(--serif);
+    font-size: 15px;
+    color: var(--lamp-soft);
+    display: flex; align-items: baseline; gap: 8px;
+  }
+  .together .label { font-family: var(--sans); font-size: 12px; color: var(--muted); }
+  .invite {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    color: var(--ink);
+    padding: 8px 12px;
+    border-radius: 10px;
+    font-size: 13px;
+  }
+  .invite:hover { border-color: rgba(243,181,106,0.5); }
+  .badge {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 16px; height: 16px; padding: 0 4px; margin-left: 6px;
+    border-radius: 100px; background: var(--rose); color: #2a1a06;
+    font-size: 10px; font-weight: 700; vertical-align: middle;
+  }
+
+  /* ---------- Text chat (fallback if voice/video won't connect) ---------- */
+  .chatPanel {
+    position: fixed; top: 0; right: 0; bottom: 0;
+    width: 320px; max-width: 100vw;
+    background: linear-gradient(180deg, var(--panel), var(--night-2));
+    border-left: 1px solid var(--line);
+    display: flex; flex-direction: column;
+    z-index: 30;
+    box-shadow: -30px 0 60px -30px rgba(0,0,0,0.7);
+  }
+  .chatHead {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 16px; border-bottom: 1px solid var(--line);
+    font-family: var(--serif); font-size: 16px;
+  }
+  .chatHead button { background: none; border: none; color: var(--muted); font-size: 18px; line-height: 1; }
+  .chatHead button:hover { color: var(--ink); }
+  .chatLog { flex: 1; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { max-width: 82%; font-size: 14px; line-height: 1.4; }
+  .msg .who { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+  .msg .bubble { padding: 9px 12px; border-radius: 14px; background: var(--panel-2); border: 1px solid var(--line); overflow-wrap: anywhere; }
+  .msg.mine { align-self: flex-end; }
+  .msg.mine .who { text-align: right; }
+  .msg.mine .bubble { background: rgba(243,181,106,0.14); border-color: rgba(243,181,106,0.35); }
+  .chatForm { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--line); }
+  .chatForm input {
+    flex: 1; background: var(--night); border: 1px solid var(--line); color: var(--ink);
+    border-radius: 10px; padding: 10px 12px; font-size: 14px; outline: none;
+  }
+  .chatForm input:focus { border-color: rgba(243,181,106,0.6); }
+  .chatForm button {
+    border: none; border-radius: 10px; padding: 0 16px; font-weight: 600;
+    color: #2a1a06; background: linear-gradient(180deg, var(--lamp-soft), var(--lamp));
+  }
+  @media (max-width: 620px) {
+    .chatPanel { width: 100vw; }
+  }
+
+  .stage {
+    flex: 1;
+    position: relative;
+    display: grid;
+    place-items: center;
+    padding: 18px;
+    min-height: 0;
+  }
+  .screen {
+    position: relative;
+    width: 100%;
+    max-width: 1100px;
+    aspect-ratio: 16 / 9;
+    background: #000;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 40px 90px -40px rgba(0,0,0,0.8);
+  }
+  #video { width: 100%; height: 100%; background:#000; display:block; }
+
+  .empty {
+    position: absolute; inset: 0;
+    display: grid; place-items: center; text-align: center;
+    padding: 24px;
+  }
+  .empty .inner { max-width: 340px; }
+  .empty h2 { font-family: var(--serif); font-weight: 500; font-size: 24px; margin: 0 0 8px; }
+  .empty p { color: var(--muted); font-size: 14px; line-height: 1.5; margin: 0 0 18px; }
+  .load {
+    display: inline-block;
+    border: 1px solid rgba(243,181,106,0.5);
+    color: var(--lamp-soft);
+    background: rgba(243,181,106,0.08);
+    padding: 12px 20px;
+    border-radius: 12px;
+    font-size: 15px; font-weight: 500;
+  }
+  .load:hover { background: rgba(243,181,106,0.16); }
+
+  /* tap-to-sync overlay (mobile autoplay guard) */
+  .tap {
+    position: absolute; inset: 0; z-index: 5;
+    display: grid; place-items: center;
+    background: rgba(21,18,29,0.72); backdrop-filter: blur(3px);
+  }
+  .tap button {
+    border: none; border-radius: 100px; padding: 16px 30px;
+    font-size: 16px; font-weight: 600; color:#2a1a06;
+    background: linear-gradient(180deg, var(--lamp-soft), var(--lamp));
+  }
+
+  /* partner call thumbnails */
+  .calls {
+    position: absolute; right: 26px; bottom: 26px; z-index: 6;
+    display: flex; flex-direction: column; gap: 12px; align-items: flex-end;
+  }
+  .cam {
+    width: 176px; aspect-ratio: 4/3;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    overflow: hidden;
+    position: relative;
+    box-shadow: 0 20px 40px -18px rgba(0,0,0,0.8);
+  }
+  .cam video { width:100%; height:100%; object-fit: cover; display:block; transform: scaleX(-1); }
+  .cam .tag {
+    position:absolute; left:8px; bottom:7px;
+    font-size:11px; color:var(--ink);
+    background: rgba(21,18,29,0.6); padding:2px 8px; border-radius:6px;
+    backdrop-filter: blur(4px);
+  }
+  .cam .off {
+    position:absolute; inset:0; display:grid; place-items:center;
+    color: var(--muted); font-family:var(--serif); font-size: 30px;
+    background: var(--panel-2);
+  }
+  .cam.local { width: 128px; }
+
+  /* controls */
+  .dock {
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    padding: 14px; flex-wrap: wrap;
+    border-top: 1px solid var(--line);
+  }
+  .ctrl {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    color: var(--ink);
+    padding: 11px 16px;
+    border-radius: 12px;
+    font-size: 14px;
+  }
+  .ctrl:hover { border-color: rgba(255,255,255,0.2); }
+  .ctrl.off { color: var(--muted); background: transparent; }
+  .ctrl.primary { color: var(--lamp-soft); border-color: rgba(243,181,106,0.4); }
+  .reacts { display:flex; gap:6px; margin-left: 6px; }
+  .reacts button {
+    background: transparent; border: 1px solid var(--line);
+    border-radius: 11px; font-size: 18px; line-height: 1;
+    padding: 9px 11px;
+  }
+  .reacts button:hover { border-color: var(--rose); transform: translateY(-1px); }
+
+  /* floating reactions */
+  #floats { position: fixed; inset: 0; pointer-events: none; z-index: 20; }
+  .float {
+    position: absolute; bottom: 90px; font-size: 34px;
+    animation: rise 2.6s ease-out forwards;
+  }
+  .float .who { display:block; font-size:11px; text-align:center; color:var(--ink); opacity:.8; margin-top:2px; font-family:var(--sans); }
+  @keyframes rise {
+    0%   { transform: translateY(0) scale(0.6); opacity: 0; }
+    12%  { transform: translateY(-14px) scale(1.1); opacity: 1; }
+    100% { transform: translateY(-230px) scale(1); opacity: 0; }
+  }
+
+  @media (max-width: 620px) {
+    .calls { right: 14px; bottom: 92px; }
+    .cam { width: 118px; }
+    .cam.local { width: 92px; }
+    .together { width: 100%; margin-left: 0; order: 5; }
+    h1 { font-size: 34px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .float { animation-duration: 1.6s; }
+    * { transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+  <!-- SETUP -->
+  <section id="setup">
+    <div class="card">
+      <div class="lamp-mark"><i class="dot"></i><span>WATCH TOGETHER</span></div>
+      <h1>A little <span class="em">room</span><br>for just the two of you.</h1>
+      <p class="sub">Open the same movie on both your screens. Playback stays in step, your voices carry, and it feels a bit less far.</p>
+
+      <div class="field">
+        <label for="name">Your name</label>
+        <input id="name" type="text" placeholder="e.g. Kaycee" autocomplete="off" />
+      </div>
+      <div class="field">
+        <label for="room">Room code — share it with your person</label>
+        <input id="room" type="text" placeholder="e.g. our-night-in" autocomplete="off" />
+      </div>
+      <button class="join" id="joinBtn">Open the room</button>
+      <p class="fineprint">You'll be asked for mic &amp; camera so you can hear each other. Voice starts on, camera starts off — turn it on whenever. Both of you need your own copy of the same video file.</p>
+    </div>
+  </section>
+
+  <!-- APP -->
+  <section id="app" class="hidden">
+    <div class="topbar">
+      <div class="brand"><i class="dot"></i> Watch Together</div>
+      <div class="status" id="status"><i class="pill"></i><span id="statusText">Waiting for your person…</span></div>
+      <button class="invite" id="inviteBtn">Copy invite link</button>
+      <button class="invite" id="chatBtn">💬 Chat<span class="badge hidden" id="chatBadge">0</span></button>
+      <div class="together"><span class="label">together for</span><span id="timer">00:00</span></div>
+    </div>
+
+    <div class="stage">
+      <div class="screen">
+        <video id="video" playsinline controls></video>
+
+        <div class="empty" id="empty">
+          <div class="inner">
+            <h2>Load your movie</h2>
+            <p>Pick your own copy from this device. It stays on your machine — only play, pause and seek are shared.</p>
+            <label class="load">Choose file<input id="file" type="file" accept="video/*" hidden></label>
+          </div>
+        </div>
+
+        <div class="tap hidden" id="tap">
+          <button id="tapBtn">Tap to sync ▶</button>
+        </div>
+      </div>
+
+      <div class="calls">
+        <div class="cam" id="remoteWrap">
+          <video id="remoteVideo" autoplay playsinline></video>
+          <div class="off" id="remoteOff">◍</div>
+          <div class="tag" id="remoteTag">Partner</div>
+        </div>
+        <div class="cam local" id="localWrap">
+          <video id="localVideo" autoplay playsinline muted></video>
+          <div class="off" id="localOff">You</div>
+          <div class="tag">You</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="dock">
+      <label class="ctrl primary">Load file<input id="file2" type="file" accept="video/*" hidden></label>
+      <button class="ctrl" id="micBtn">🎙 Mic on</button>
+      <button class="ctrl off" id="camBtn">📷 Camera off</button>
+      <div class="reacts" id="reacts">
+        <button data-e="❤️">❤️</button>
+        <button data-e="😂">😂</button>
+        <button data-e="😮">😮</button>
+        <button data-e="😍">😍</button>
+        <button data-e="🥹">🥹</button>
+        <button data-e="👏">👏</button>
+      </div>
+    </div>
+
+    <div class="chatPanel hidden" id="chatPanel">
+      <div class="chatHead"><span>Chat</span><button id="chatClose" type="button">✕</button></div>
+      <div class="chatLog" id="chatLog"></div>
+      <form class="chatForm" id="chatForm">
+        <input id="chatInput" type="text" placeholder="Say something…" autocomplete="off" maxlength="500" />
+        <button type="submit">Send</button>
+      </form>
+    </div>
+  </section>
+
+  <div id="floats"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ---- tiny helpers ----
+  function $(id) { return document.getElementById(id); }
+  var ICE = {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      // Free public TURN relay (Open Relay Project) — kicks in only when a direct
+      // peer-to-peer connection isn't possible (e.g. one of you is behind carrier-
+      // grade NAT or a strict router). Fine for occasional personal use; swap in
+      // your own TURN server if it ever feels slow or unavailable.
+      { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+      { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+      { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
+    ]
+  };
+
+  // Prefill room from the URL hash so an invite link "just works".
+  if (location.hash.length > 1) {
+    $('room').value = decodeURIComponent(location.hash.slice(1));
+  }
+
+  var state = {
+    ws: null, pc: null, localStream: null,
+    room: '', name: 'Partner', myId: '', initiator: false,
+    connected: false, offset: 0, minRtt: Infinity,
+    applyingRemote: false, remoteClearTimer: null,
+    rateResetTimer: null, sinceTs: 0, timerInt: null
+  };
+
+  var video = $('video');
+
+  // ===================================================================
+  //  JOIN
+  // ===================================================================
+  $('joinBtn').addEventListener('click', join);
+  $('room').addEventListener('keydown', function (e) { if (e.key === 'Enter') join(); });
+
+  function join() {
+    var room = $('room').value.trim();
+    if (!room) { $('room').focus(); return; }
+    state.room = room;
+    state.name = ($('name').value.trim() || 'Partner');
+    location.hash = encodeURIComponent(room);
+
+    getMedia().then(function () {
+      setupPeer();
+      openSocket();
+      $('setup').classList.add('hidden');
+      $('app').classList.remove('hidden');
+    });
+  }
+
+  // ===================================================================
+  //  MEDIA (mic on, camera off by default)
+  // ===================================================================
+  function getMedia() {
+    var opts = { audio: { echoCancellation: true, noiseSuppression: true }, video: { width: 640, height: 480 } };
+    return navigator.mediaDevices.getUserMedia(opts)
+      .catch(function () { return navigator.mediaDevices.getUserMedia({ audio: true }).catch(function () { return null; }); })
+      .then(function (stream) {
+        state.localStream = stream;
+        if (!stream) { setMicUI(false, true); setCamUI(false, true); return; }
+        $('localVideo').srcObject = stream;
+        var v = stream.getVideoTracks()[0];
+        if (v) { v.enabled = false; }          // start with camera off
+        setCamUI(false, !v);
+        setMicUI(true, false);
+        $('localOff').classList.remove('hidden'); // camera off => show "You"
+      });
+  }
+
+  // ===================================================================
+  //  WEBSOCKET SIGNALLING + CONTROL RELAY
+  // ===================================================================
+  function openSocket() {
+    var proto = (location.protocol === 'https:') ? 'wss://' : 'ws://';
+    var ws = new WebSocket(proto + location.host);
+    state.ws = ws;
+
+    ws.addEventListener('open', function () {
+      send({ type: 'join', room: state.room, name: state.name });
+      pingLoop();
+    });
+
+    ws.addEventListener('message', function (ev) {
+      var msg;
+      try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      handle(msg);
+    });
+
+    ws.addEventListener('close', function () {
+      setStatus(false, 'Reconnecting…');
+      setTimeout(openSocket, 1500);
+    });
+  }
+
+  function send(obj) {
+    if (state.ws && state.ws.readyState === 1) { state.ws.send(JSON.stringify(obj)); }
+  }
+
+  function handle(msg) {
+    switch (msg.type) {
+      case 'joined':
+        state.myId = msg.id;
+        state.initiator = msg.initiator;
+        if (msg.peers >= 2) { onBothHere(); }
+        break;
+
+      case 'presence':
+        if (msg.peers >= 2) { onBothHere(); } else { onAlone(); }
+        break;
+
+      case 'peer-joined':
+        // Someone just arrived. The first person present drives the call
+        // and shares the current playback position.
+        if (state.initiator) { makeOffer(); sendSnapshot(); }
+        break;
+
+      case 'peer-left':
+        onAlone();
+        break;
+
+      case 'pong': {
+        var now = Date.now();
+        var rtt = now - msg.t0;
+        if (rtt < state.minRtt) {          // keep the best (lowest-latency) sample
+          state.minRtt = rtt;
+          state.offset = (msg.ts + rtt / 2) - now;  // ~ shared clock with the server
+        }
+        break;
+      }
+
+      // ---- WebRTC ----
+      case 'offer':
+        state.pc.setRemoteDescription(msg.sdp)
+          .then(function () { return state.pc.createAnswer(); })
+          .then(function (a) { return state.pc.setLocalDescription(a); })
+          .then(function () { send({ type: 'answer', sdp: state.pc.localDescription }); });
+        break;
+      case 'answer':
+        state.pc.setRemoteDescription(msg.sdp);
+        break;
+      case 'ice':
+        if (msg.candidate) { state.pc.addIceCandidate(msg.candidate).catch(function () {}); }
+        break;
+
+      // ---- playback ----
+      case 'control': applyControl(msg); break;
+      case 'sync': applyDrift(msg); break;
+      case 'request-sync': if (video.src) sendSnapshot(); break;
+      case 'reaction': floatReaction(msg.emoji, msg.fromName); break;
+      case 'chat': addChatMessage(msg.fromName, msg.text, false); bumpUnread(); break;
+    }
+  }
+
+  // ===================================================================
+  //  SHARED CLOCK (so play/seek land at the same real moment)
+  // ===================================================================
+  function pingLoop() {
+    send({ type: 'ping', t0: Date.now() });
+    setTimeout(pingLoop, 5000);
+  }
+  function syncedNow() { return Date.now() + state.offset; }
+
+  // ===================================================================
+  //  PEER CONNECTION
+  // ===================================================================
+  function setupPeer() {
+    var pc = new RTCPeerConnection(ICE);
+    state.pc = pc;
+    if (state.localStream) {
+      state.localStream.getTracks().forEach(function (t) { pc.addTrack(t, state.localStream); });
+    }
+    pc.onicecandidate = function (e) { if (e.candidate) send({ type: 'ice', candidate: e.candidate }); };
+    pc.ontrack = function (e) {
+      $('remoteVideo').srcObject = e.streams[0];
+      var vt = e.streams[0].getVideoTracks()[0];
+      showRemoteVideo(vt && vt.enabled);
+      if (vt) {
+        vt.onmute = function () { showRemoteVideo(false); };
+        vt.onunmute = function () { showRemoteVideo(true); };
+      }
+    };
+  }
+
+  function makeOffer() {
+    state.pc.createOffer()
+      .then(function (o) { return state.pc.setLocalDescription(o); })
+      .then(function () { send({ type: 'offer', sdp: state.pc.localDescription }); });
+  }
+
+  // ===================================================================
+  //  PLAYBACK SYNC
+  // ===================================================================
+  // Guard so applying a remote action doesn't echo back as our own event.
+  function withRemote(fn) {
+    state.applyingRemote = true;
+    try { fn(); } finally {
+      clearTimeout(state.remoteClearTimer);
+      state.remoteClearTimer = setTimeout(function () { state.applyingRemote = false; }, 260);
+    }
+  }
+
+  video.addEventListener('play', function () { if (!state.applyingRemote) sendControl('play'); });
+  video.addEventListener('pause', function () { if (!state.applyingRemote) sendControl('pause'); });
+  video.addEventListener('seeked', function () { if (!state.applyingRemote) sendControl('seek'); });
+
+  function sendControl(kind) {
+    send({ type: 'control', kind: kind, mediaTime: video.currentTime, at: syncedNow() });
+  }
+
+  function sendSnapshot() {
+    // bring a late joiner to the current spot, playing or paused
+    send({ type: 'control', kind: video.paused ? 'pause' : 'play', mediaTime: video.currentTime, at: syncedNow() });
+  }
+
+  function applyControl(msg) {
+    if (!video.src) { return; }
+    var delay = Math.max(0, (syncedNow() - msg.at) / 1000);
+    withRemote(function () {
+      if (msg.kind === 'play') {
+        video.currentTime = msg.mediaTime + delay;
+        var p = video.play();
+        if (p && p.catch) { p.catch(function () { showTap(true); }); }
+      } else if (msg.kind === 'pause') {
+        video.currentTime = msg.mediaTime;
+        video.pause();
+      } else if (msg.kind === 'seek') {
+        video.currentTime = msg.mediaTime + (video.paused ? 0 : delay);
+      }
+    });
+  }
+
+  // Only the initiator broadcasts the heartbeat; the other follows it, so the
+  // two never fight each other over who's "right".
+  setInterval(function () {
+    if (state.initiator && state.connected && !video.paused && video.src) {
+      send({ type: 'sync', mediaTime: video.currentTime, at: syncedNow() });
+    }
+  }, 3000);
+
+  function applyDrift(msg) {
+    if (state.initiator || video.paused || !video.src) { return; }
+    var delay = (syncedNow() - msg.at) / 1000;
+    var target = msg.mediaTime + delay;
+    var drift = target - video.currentTime;
+    var mag = Math.abs(drift);
+    if (mag > 1.5) {
+      withRemote(function () { video.currentTime = target; });
+      video.playbackRate = 1;
+    } else if (mag > 0.15) {
+      // ease back into sync instead of a visible jump
+      video.playbackRate = drift > 0 ? 1.05 : 0.95;
+      clearTimeout(state.rateResetTimer);
+      state.rateResetTimer = setTimeout(function () { video.playbackRate = 1; }, Math.min(4000, (mag / 0.05) * 1000));
+    } else {
+      video.playbackRate = 1;
+    }
+  }
+
+  // ===================================================================
+  //  FILE PICKING
+  // ===================================================================
+  function onPick(e) {
+    var f = e.target.files && e.target.files[0];
+    if (!f) return;
+    if (video.src) { URL.revokeObjectURL(video.src); }
+    video.src = URL.createObjectURL(f);
+    $('empty').classList.add('hidden');
+    // Our partner may already be mid-movie; ask them where we should be.
+    send({ type: 'request-sync' });
+  }
+  $('file').addEventListener('change', onPick);
+  $('file2').addEventListener('change', onPick);
+
+  // ===================================================================
+  //  CONTROLS: mic / camera / reactions / tap-to-sync / invite
+  // ===================================================================
+  $('micBtn').addEventListener('click', function () {
+    if (!state.localStream) return;
+    var t = state.localStream.getAudioTracks()[0];
+    if (!t) return;
+    t.enabled = !t.enabled;
+    setMicUI(t.enabled, false);
+  });
+  $('camBtn').addEventListener('click', function () {
+    if (!state.localStream) return;
+    var t = state.localStream.getVideoTracks()[0];
+    if (!t) return;
+    t.enabled = !t.enabled;
+    setCamUI(t.enabled, false);
+    $('localOff').classList.toggle('hidden', t.enabled);
+  });
+
+  // Left/right arrow keys fast-rewind / fast-forward the movie (10s per press).
+  // Skipped while typing in a text field so it doesn't fight the room/name inputs.
+  var SEEK_STEP = 10;
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    var tag = document.activeElement && document.activeElement.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    if (!video.src) return;
+    e.preventDefault();
+    if (e.key === 'ArrowLeft') {
+      video.currentTime = Math.max(0, video.currentTime - SEEK_STEP);
+    } else {
+      var target = video.currentTime + SEEK_STEP;
+      video.currentTime = isNaN(video.duration) ? target : Math.min(target, video.duration);
+    }
+  });
+
+  var reactButtons = document.querySelectorAll('#reacts button');
+  reactButtons.forEach(function (b) {
+    b.addEventListener('click', function () {
+      var e = b.getAttribute('data-e');
+      floatReaction(e, state.name);
+      send({ type: 'reaction', emoji: e });
+    });
+  });
+
+  // ===================================================================
+  //  TEXT CHAT (fallback for when the voice/video call won't connect)
+  // ===================================================================
+  function toggleChat() {
+    var panel = $('chatPanel');
+    var willShow = panel.classList.contains('hidden');
+    panel.classList.toggle('hidden');
+    if (willShow) { clearUnread(); $('chatInput').focus(); }
+  }
+  $('chatBtn').addEventListener('click', toggleChat);
+  $('chatClose').addEventListener('click', function () { $('chatPanel').classList.add('hidden'); });
+
+  $('chatForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var input = $('chatInput');
+    var text = input.value.trim();
+    if (!text) return;
+    addChatMessage(state.name, text, true);
+    send({ type: 'chat', text: text });
+    input.value = '';
+  });
+
+  function addChatMessage(name, text, mine) {
+    var log = $('chatLog');
+    var wrap = document.createElement('div');
+    wrap.className = 'msg' + (mine ? ' mine' : '');
+    var who = document.createElement('div');
+    who.className = 'who';
+    who.textContent = mine ? 'You' : (name || 'Partner');
+    var bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.textContent = text;
+    wrap.appendChild(who);
+    wrap.appendChild(bubble);
+    log.appendChild(wrap);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function bumpUnread() {
+    if (!$('chatPanel').classList.contains('hidden')) return;
+    state.chatUnread = (state.chatUnread || 0) + 1;
+    var b = $('chatBadge');
+    b.textContent = state.chatUnread;
+    b.classList.remove('hidden');
+  }
+  function clearUnread() {
+    state.chatUnread = 0;
+    $('chatBadge').classList.add('hidden');
+  }
+
+  $('tapBtn').addEventListener('click', function () {
+    showTap(false);
+    video.play();
+  });
+
+  $('inviteBtn').addEventListener('click', function () {
+    var url = location.origin + location.pathname + '#' + encodeURIComponent(state.room);
+    navigator.clipboard.writeText(url).then(function () {
+      $('inviteBtn').textContent = 'Link copied ✓';
+      setTimeout(function () { $('inviteBtn').textContent = 'Copy invite link'; }, 1800);
+    });
+  });
+
+  // ===================================================================
+  //  UI STATE
+  // ===================================================================
+  function setMicUI(on, missing) {
+    var b = $('micBtn');
+    b.textContent = missing ? '🎙 No mic' : (on ? '🎙 Mic on' : '🔇 Mic off');
+    b.classList.toggle('off', !on);
+  }
+  function setCamUI(on, missing) {
+    var b = $('camBtn');
+    b.textContent = missing ? '📷 No camera' : (on ? '📷 Camera on' : '📷 Camera off');
+    b.classList.toggle('off', !on);
+  }
+  function showRemoteVideo(on) {
+    $('remoteOff').classList.toggle('hidden', !!on);
+  }
+  function showTap(on) { $('tap').classList.toggle('hidden', !on); }
+
+  function setStatus(on, text) {
+    $('status').classList.toggle('on', on);
+    $('statusText').textContent = text;
+  }
+
+  function onBothHere() {
+    if (state.connected) return;
+    state.connected = true;
+    setStatus(true, state.name === 'Partner' ? 'Connected' : 'Together now');
+    $('remoteTag').textContent = 'Partner';
+    startTimer();
+  }
+  function onAlone() {
+    state.connected = false;
+    setStatus(false, 'Waiting for your person…');
+    showRemoteVideo(false);
+    stopTimer();
+  }
+
+  function startTimer() {
+    if (state.timerInt) return;
+    state.sinceTs = Date.now();
+    state.timerInt = setInterval(function () {
+      var s = Math.floor((Date.now() - state.sinceTs) / 1000);
+      var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+      var two = function (n) { return (n < 10 ? '0' : '') + n; };
+      $('timer').textContent = (h > 0 ? two(h) + ':' : '') + two(m) + ':' + two(sec);
+    }, 1000);
+  }
+  function stopTimer() { clearInterval(state.timerInt); state.timerInt = null; }
+
+  // ===================================================================
+  //  FLOATING REACTIONS
+  // ===================================================================
+  function floatReaction(emoji, who) {
+    var el = document.createElement('div');
+    el.className = 'float';
+    el.style.left = (12 + Math.random() * 66) + '%';
+    el.textContent = emoji;
+    if (who) {
+      var w = document.createElement('span');
+      w.className = 'who';
+      w.textContent = who;
+      el.appendChild(w);
+    }
+    $('floats').appendChild(el);
+    setTimeout(function () { el.remove(); }, 2700);
+  }
+
+})();
+</script>
+</body>
+</html>`;
+
+// ---------------------------------------------------------------------------
+// Server: serves the page, relays signalling + control messages per room.
+// ---------------------------------------------------------------------------
+const server = http.createServer((req, res) => {
+  const path = (req.url || '/').split('?')[0];
+  if (path === '/' || path === '/index.html') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(PAGE);
+  } else if (path === '/health') {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('ok');
+  } else {
+    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    res.end('Not found');
+  }
+});
+
+const wss = new WebSocketServer({ server });
+const rooms = new Map(); // roomId -> Set<ws>
+
+function broadcast(room, obj, except) {
+  const set = rooms.get(room);
+  if (!set) return;
+  const data = JSON.stringify(obj);
+  for (const peer of set) {
+    if (peer !== except && peer.readyState === 1) peer.send(data);
+  }
+}
+
+wss.on('connection', (ws) => {
+  ws.id = Math.random().toString(36).slice(2, 10);
+  ws.room = null;
+
+  ws.on('message', (buf) => {
+    let msg;
+    try { msg = JSON.parse(buf.toString()); } catch (e) { return; }
+
+    if (msg.type === 'join') {
+      const room = String(msg.room).slice(0, 120);
+      let set = rooms.get(room);
+      if (!set) { set = new Set(); rooms.set(room, set); }
+      if (set.size >= 2 && !set.has(ws)) {
+        ws.send(JSON.stringify({ type: 'full' }));
+        return;
+      }
+      ws.room = room;
+      ws.name = (msg.name || 'Partner').slice(0, 40);
+      const initiator = set.size === 0;     // first in the room drives the call
+      set.add(ws);
+      ws.send(JSON.stringify({ type: 'joined', id: ws.id, initiator: initiator, peers: set.size }));
+      // tell the existing peer a new person arrived
+      broadcast(room, { type: 'peer-joined', name: ws.name }, ws);
+      broadcast(room, { type: 'presence', peers: set.size });
+      return;
+    }
+
+    if (msg.type === 'ping') {
+      ws.send(JSON.stringify({ type: 'pong', t0: msg.t0, ts: Date.now() }));
+      return;
+    }
+
+    if (msg.type === 'chat') {
+      const text = String(msg.text || '').slice(0, 500).trim();
+      if (!text || !ws.room) return;
+      broadcast(ws.room, { type: 'chat', text, from: ws.id, fromName: ws.name }, ws);
+      return;
+    }
+
+    // Everything else (offer/answer/ice/control/sync/reaction) → the other peer.
+    if (ws.room) {
+      broadcast(ws.room, Object.assign({}, msg, { from: ws.id, fromName: ws.name }), ws);
+    }
+  });
+
+  ws.on('close', () => {
+    const set = ws.room && rooms.get(ws.room);
+    if (!set) return;
+    set.delete(ws);
+    if (set.size === 0) { rooms.delete(ws.room); }
+    else {
+      broadcast(ws.room, { type: 'peer-left' });
+      broadcast(ws.room, { type: 'presence', peers: set.size });
+    }
+  });
+});
+
+server.listen(PORT, () => {
+  console.log('Watch Together is running.');
+  console.log('  Local:   http://localhost:' + PORT);
+  console.log('  Open it in two tabs (or share the deployed URL) and join the same room.');
+});
