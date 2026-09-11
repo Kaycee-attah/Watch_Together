@@ -339,8 +339,77 @@ const PAGE = `<!DOCTYPE html>
   }
   @media (prefers-reduced-motion: reduce) {
     .float { animation-duration: 1.6s; }
+    .spark { animation: none !important; opacity: 0 !important; }
     * { transition: none !important; }
   }
+
+  /* ---------- Reaction polish: sparkle trail + combo burst ---------- */
+  .float .spark {
+    position: absolute; left: 50%; top: 50%;
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--lamp-soft);
+    box-shadow: 0 0 6px 1px rgba(243,181,106,0.8);
+    animation: spark-burst 0.9s ease-out forwards;
+    animation-delay: var(--d, 0s);
+  }
+  @keyframes spark-burst {
+    0%   { transform: translate(-50%, -50%) translate(0, 0) scale(1); opacity: 1; }
+    100% { transform: translate(-50%, -50%) translate(var(--x), var(--y)) scale(0); opacity: 0; }
+  }
+  .float.mega { font-size: 54px; }
+  .combo-banner {
+    position: absolute; bottom: 130px; left: 50%; transform: translateX(-50%);
+    font-family: var(--serif); font-size: 15px; color: var(--lamp-soft);
+    background: rgba(21,18,29,0.6); padding: 6px 16px; border-radius: 100px;
+    backdrop-filter: blur(4px);
+    animation: rise 2.2s ease-out forwards;
+    white-space: nowrap;
+  }
+
+  /* ---------- Duration-mismatch banner ---------- */
+  .warnBar {
+    position: absolute; top: 0; left: 0; right: 0; z-index: 8;
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    background: rgba(232,127,149,0.16);
+    border-bottom: 1px solid rgba(232,127,149,0.4);
+    color: var(--ink); font-size: 13px;
+    padding: 9px 14px; text-align: center;
+  }
+  .warnBar button {
+    background: none; border: 1px solid rgba(255,255,255,0.25); color: var(--ink);
+    border-radius: 8px; padding: 3px 10px; font-size: 12px; flex-shrink: 0;
+  }
+
+  /* ---------- Session recap ---------- */
+  .recapOverlay {
+    position: fixed; inset: 0; z-index: 40;
+    display: grid; place-items: center;
+    background: rgba(21,18,29,0.72); backdrop-filter: blur(4px);
+    padding: 20px;
+  }
+  .recapCard {
+    width: 100%; max-width: 380px;
+    background: linear-gradient(180deg, var(--panel), var(--night-2));
+    border: 1px solid var(--line); border-radius: 20px;
+    padding: 30px 28px; text-align: center;
+    box-shadow: 0 30px 80px -30px rgba(0,0,0,0.7);
+  }
+  .recapCard h2 { font-family: var(--serif); font-weight: 500; font-size: 24px; margin: 0 0 18px; }
+  .recapStats { display: flex; justify-content: center; gap: 26px; margin-bottom: 18px; }
+  .recapStats div { display: flex; flex-direction: column; }
+  .recapStats .num { font-family: var(--serif); font-size: 26px; color: var(--lamp-soft); }
+  .recapStats .lbl { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .recapQuote { font-size: 13px; color: var(--muted); font-style: italic; margin: 0 0 22px; line-height: 1.5; }
+  .recapCard button {
+    border: none; border-radius: 12px; padding: 12px 22px;
+    font-size: 14px; font-weight: 600; color: #2a1a06;
+    background: linear-gradient(180deg, var(--lamp-soft), var(--lamp));
+  }
+
+  /* ---------- Ambient dimming when idle (movie-theater feel) ---------- */
+  .topbar, .dock { transition: opacity .6s ease; }
+  #app.idle .topbar, #app.idle .dock { opacity: 0.12; }
+  #app.idle .topbar:hover, #app.idle .dock:hover { opacity: 1; }
 </style>
 </head>
 <body>
@@ -377,6 +446,10 @@ const PAGE = `<!DOCTYPE html>
 
     <div class="stage">
       <div class="screen">
+        <div class="warnBar hidden" id="warnBar">
+          <span id="warnText"></span>
+          <button id="warnClose" type="button">Dismiss</button>
+        </div>
         <video id="video" playsinline controls></video>
 
         <div class="empty" id="empty">
@@ -432,6 +505,19 @@ const PAGE = `<!DOCTYPE html>
 
   <div id="floats"></div>
 
+  <div class="recapOverlay hidden" id="recap">
+    <div class="recapCard">
+      <h2>That was nice.</h2>
+      <div class="recapStats">
+        <div><span class="num" id="recapTime">00:00</span><span class="lbl">together</span></div>
+        <div><span class="num" id="recapReacts">0</span><span class="lbl">reactions</span></div>
+      </div>
+      <p class="recapQuote hidden" id="recapQuote"></p>
+      <button id="recapClose" type="button">Close</button>
+    </div>
+  </div>
+
+<script src="https://cdn.jsdelivr.net/npm/twemoji@14.0.2/dist/twemoji.min.js" crossorigin="anonymous"></script>
 <script>
 (function () {
   'use strict';
@@ -451,6 +537,20 @@ const PAGE = `<!DOCTYPE html>
     ]
   };
 
+  // Consistent-looking emoji across Windows/Mac/mobile instead of each OS's own font.
+  var TWEMOJI_OPTS = { base: 'https://cdn.jsdelivr.net/npm/twemoji@14.0.2/assets/', folder: 'svg', ext: '.svg' };
+  function twem(el) { if (window.twemoji) { twemoji.parse(el, TWEMOJI_OPTS); } }
+
+  // Remember the last room/name used on this device so reopening the page doesn't
+  // require retyping — an invite link's room code still wins over this.
+  try {
+    var saved = JSON.parse(localStorage.getItem('wt_last') || 'null');
+    if (saved) {
+      if (saved.name) { $('name').value = saved.name; }
+      if (saved.room) { $('room').value = saved.room; }
+    }
+  } catch (e) {}
+
   // Prefill room from the URL hash so an invite link "just works".
   if (location.hash.length > 1) {
     $('room').value = decodeURIComponent(location.hash.slice(1));
@@ -461,10 +561,14 @@ const PAGE = `<!DOCTYPE html>
     room: '', name: 'Partner', myId: '', initiator: false,
     connected: false, offset: 0, minRtt: Infinity,
     applyingRemote: false, remoteClearTimer: null,
-    rateResetTimer: null, sinceTs: 0, timerInt: null
+    rateResetTimer: null, sinceTs: 0, timerInt: null,
+    reactionCount: 0, firstChatMsg: null,
+    myLastReact: null, peerLastReact: null, comboFired: false, comboResetTimer: null,
+    myDuration: null, peerDuration: null
   };
 
   var video = $('video');
+  twem(document.body);
 
   // ===================================================================
   //  JOIN
@@ -478,6 +582,8 @@ const PAGE = `<!DOCTYPE html>
     state.room = room;
     state.name = ($('name').value.trim() || 'Partner');
     location.hash = encodeURIComponent(room);
+    try { localStorage.setItem('wt_last', JSON.stringify({ room: room, name: state.name })); } catch (e) {}
+    if (window.Notification && Notification.permission === 'default') { Notification.requestPermission(); }
 
     getMedia().then(function () {
       setupPeer();
@@ -585,8 +691,9 @@ const PAGE = `<!DOCTYPE html>
       case 'control': applyControl(msg); break;
       case 'sync': applyDrift(msg); break;
       case 'request-sync': if (video.src) sendSnapshot(); break;
-      case 'reaction': floatReaction(msg.emoji, msg.fromName); break;
+      case 'reaction': registerReaction(msg.emoji, false); floatReaction(msg.emoji, msg.fromName, msg.mega); break;
       case 'chat': addChatMessage(msg.fromName, msg.text, false); bumpUnread(); break;
+      case 'meta': state.peerDuration = msg.duration; checkDurationMismatch(); break;
     }
   }
 
@@ -702,6 +809,8 @@ const PAGE = `<!DOCTYPE html>
     var f = e.target.files && e.target.files[0];
     if (!f) return;
     if (video.src) { URL.revokeObjectURL(video.src); }
+    state.myDuration = null;
+    $('warnBar').classList.add('hidden');
     video.src = URL.createObjectURL(f);
     $('empty').classList.add('hidden');
     // Our partner may already be mid-movie; ask them where we should be.
@@ -709,6 +818,25 @@ const PAGE = `<!DOCTYPE html>
   }
   $('file').addEventListener('change', onPick);
   $('file2').addEventListener('change', onPick);
+
+  // Warn if the two files are probably different cuts/versions of the movie.
+  video.addEventListener('loadedmetadata', function () {
+    state.myDuration = video.duration;
+    send({ type: 'meta', duration: video.duration });
+    checkDurationMismatch();
+  });
+  function checkDurationMismatch() {
+    var a = state.myDuration, b = state.peerDuration;
+    if (!a || !b || !isFinite(a) || !isFinite(b)) { $('warnBar').classList.add('hidden'); return; }
+    var diff = Math.abs(a - b);
+    if (diff > 3) {
+      $('warnText').textContent = 'Heads up — your files might be different versions (durations differ by ' + Math.round(diff) + 's).';
+      $('warnBar').classList.remove('hidden');
+    } else {
+      $('warnBar').classList.add('hidden');
+    }
+  }
+  $('warnClose').addEventListener('click', function () { $('warnBar').classList.add('hidden'); });
 
   // ===================================================================
   //  CONTROLS: mic / camera / reactions / tap-to-sync / invite
@@ -746,14 +874,51 @@ const PAGE = `<!DOCTYPE html>
     }
   });
 
+  // Tap a reaction to send it; hold it down for a bigger "mega" version.
+  var REACT_COMBO_WINDOW = 2500;
   var reactButtons = document.querySelectorAll('#reacts button');
   reactButtons.forEach(function (b) {
-    b.addEventListener('click', function () {
-      var e = b.getAttribute('data-e');
-      floatReaction(e, state.name);
-      send({ type: 'reaction', emoji: e });
+    var pressTimer = null, isMega = false;
+    b.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+    b.addEventListener('pointerdown', function () {
+      isMega = false;
+      pressTimer = setTimeout(function () { isMega = true; }, 450);
     });
+    b.addEventListener('pointerup', function () {
+      clearTimeout(pressTimer);
+      var e = b.getAttribute('data-e');
+      registerReaction(e, true);
+      floatReaction(e, state.name, isMega);
+      send({ type: 'reaction', emoji: e, mega: isMega });
+    });
+    b.addEventListener('pointerleave', function () { clearTimeout(pressTimer); });
   });
+
+  // If you and your partner send the same reaction within a couple seconds,
+  // celebrate the "in sync" moment with a bigger banner.
+  function registerReaction(emoji, mine) {
+    state.reactionCount += 1;
+    var now = Date.now();
+    if (mine) { state.myLastReact = { emoji: emoji, at: now }; }
+    else { state.peerLastReact = { emoji: emoji, at: now }; }
+    var a = state.myLastReact, b = state.peerLastReact;
+    if (a && b && a.emoji === emoji && b.emoji === emoji &&
+        Math.abs(a.at - b.at) < REACT_COMBO_WINDOW && !state.comboFired) {
+      state.comboFired = true;
+      clearTimeout(state.comboResetTimer);
+      state.comboResetTimer = setTimeout(function () { state.comboFired = false; }, REACT_COMBO_WINDOW);
+      showCombo(emoji);
+    }
+  }
+
+  function showCombo(emoji) {
+    var el = document.createElement('div');
+    el.className = 'combo-banner';
+    el.textContent = emoji + ' In sync ' + emoji;
+    $('floats').appendChild(el);
+    twem(el);
+    setTimeout(function () { el.remove(); }, 2300);
+  }
 
   // ===================================================================
   //  TEXT CHAT (fallback for when the voice/video call won't connect)
@@ -778,6 +943,7 @@ const PAGE = `<!DOCTYPE html>
   });
 
   function addChatMessage(name, text, mine) {
+    if (!state.firstChatMsg) { state.firstChatMsg = { name: mine ? state.name : (name || 'Partner'), text: text }; }
     var log = $('chatLog');
     var wrap = document.createElement('div');
     wrap.className = 'msg' + (mine ? ' mine' : '');
@@ -790,6 +956,7 @@ const PAGE = `<!DOCTYPE html>
     wrap.appendChild(who);
     wrap.appendChild(bubble);
     log.appendChild(wrap);
+    twem(bubble);
     log.scrollTop = log.scrollHeight;
   }
 
@@ -844,16 +1011,64 @@ const PAGE = `<!DOCTYPE html>
   function onBothHere() {
     if (state.connected) return;
     state.connected = true;
+    state.reactionCount = 0;
+    state.firstChatMsg = null;
     setStatus(true, state.name === 'Partner' ? 'Connected' : 'Together now');
     $('remoteTag').textContent = 'Partner';
     startTimer();
+    playChime();
+    if (document.hidden && window.Notification && Notification.permission === 'granted') {
+      new Notification('Watch Together', { body: 'Your person is here 💛' });
+    }
   }
   function onAlone() {
+    if (state.connected) { showRecap(); }
     state.connected = false;
     setStatus(false, 'Waiting for your person…');
     showRemoteVideo(false);
     stopTimer();
   }
+
+  // A soft two-tone chime when your person arrives, so you notice even if the
+  // tab isn't focused.
+  function playChime() {
+    try {
+      var Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      var ctx = new Ctx();
+      var o = ctx.createOscillator();
+      var g = ctx.createGain();
+      o.type = 'sine';
+      o.frequency.setValueAtTime(660, ctx.currentTime);
+      o.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15);
+      g.gain.setValueAtTime(0.0001, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.5);
+      o.connect(g); g.connect(ctx.destination);
+      o.start();
+      o.stop(ctx.currentTime + 0.5);
+      setTimeout(function () { ctx.close(); }, 700);
+    } catch (e) {}
+  }
+
+  // A small souvenir card summarizing the session once your person disconnects.
+  function showRecap() {
+    var secs = Math.max(0, Math.floor((Date.now() - state.sinceTs) / 1000));
+    var h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = secs % 60;
+    var two = function (n) { return (n < 10 ? '0' : '') + n; };
+    $('recapTime').textContent = (h > 0 ? h + ':' + two(m) : m) + ':' + two(s);
+    $('recapReacts').textContent = state.reactionCount;
+    var q = $('recapQuote');
+    if (state.firstChatMsg) {
+      q.textContent = '"' + state.firstChatMsg.text + '" — ' + state.firstChatMsg.name;
+      q.classList.remove('hidden');
+    } else {
+      q.classList.add('hidden');
+    }
+    $('recap').classList.remove('hidden');
+    twem($('recap'));
+  }
+  $('recapClose').addEventListener('click', function () { $('recap').classList.add('hidden'); });
 
   function startTimer() {
     if (state.timerInt) return;
@@ -870,11 +1085,22 @@ const PAGE = `<!DOCTYPE html>
   // ===================================================================
   //  FLOATING REACTIONS
   // ===================================================================
-  function floatReaction(emoji, who) {
+  function floatReaction(emoji, who, mega) {
     var el = document.createElement('div');
-    el.className = 'float';
+    el.className = 'float' + (mega ? ' mega' : '');
     el.style.left = (12 + Math.random() * 66) + '%';
     el.textContent = emoji;
+    var sparkCount = mega ? 10 : 6;
+    for (var i = 0; i < sparkCount; i++) {
+      var s = document.createElement('span');
+      s.className = 'spark';
+      var angle = Math.random() * Math.PI * 2;
+      var dist = 24 + Math.random() * 26;
+      s.style.setProperty('--x', (Math.cos(angle) * dist).toFixed(1) + 'px');
+      s.style.setProperty('--y', (Math.sin(angle) * dist).toFixed(1) + 'px');
+      s.style.setProperty('--d', (Math.random() * 0.15).toFixed(2) + 's');
+      el.appendChild(s);
+    }
     if (who) {
       var w = document.createElement('span');
       w.className = 'who';
@@ -882,8 +1108,23 @@ const PAGE = `<!DOCTYPE html>
       el.appendChild(w);
     }
     $('floats').appendChild(el);
+    twem(el);
     setTimeout(function () { el.remove(); }, 2700);
   }
+
+  // ===================================================================
+  //  AMBIENT DIMMING (theater-style — fades the chrome, not the movie, when idle)
+  // ===================================================================
+  var idleTimer = null;
+  function markActive() {
+    $('app').classList.remove('idle');
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(function () { $('app').classList.add('idle'); }, 3500);
+  }
+  ['mousemove', 'keydown', 'click', 'touchstart'].forEach(function (evt) {
+    document.addEventListener(evt, markActive, { passive: true });
+  });
+  markActive();
 
 })();
 </script>
