@@ -1,10 +1,12 @@
 /*
  * Watch Together — a single-file prototype
  * -----------------------------------------
- * You and one other person each open your OWN local copy of a video file.
- * Only the controls (play / pause / seek) and a voice+video call travel over
- * the internet — the video itself never leaves either device. Tiny bandwidth,
- * "sitting next to each other" feel.
+ * Two ways to watch: you and one other person each open your OWN local copy
+ * of a video file, or either of you pastes a YouTube link and it loads for
+ * both of you at once. Only the controls (play / pause / seek) and a
+ * voice+video call travel over the internet — a local video file itself
+ * never leaves either device. Tiny bandwidth, "sitting next to each other"
+ * feel.
  *
  * Run it:
  *   npm init -y           (once, if you don't have a package.json)
@@ -15,7 +17,7 @@
  * far away, deploy this file to any host that allows long-lived WebSocket
  * connections (Railway, Render, Fly.io) and share the URL.
  *
- * Both people must have the same video file on their own machine.
+ * For local files, both people need the same file on their own machine.
  */
 
 const http = require('http');
@@ -328,9 +330,10 @@ const PAGE = `<!DOCTYPE html>
     display: grid; place-items: center; text-align: center;
     padding: 24px;
   }
-  .empty .inner { max-width: 340px; }
+  .empty .inner { max-width: 380px; }
   .empty h2 { font-family: var(--serif); font-weight: 500; font-size: 24px; margin: 0 0 8px; }
   .empty p { color: var(--muted); font-size: 14px; line-height: 1.5; margin: 0 0 18px; }
+  .sourceChoices { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
   .load {
     display: inline-block;
     border: 1px solid rgba(243,181,106,0.5);
@@ -339,8 +342,39 @@ const PAGE = `<!DOCTYPE html>
     padding: 12px 20px;
     border-radius: 12px;
     font-size: 15px; font-weight: 500;
+    font-family: inherit;
   }
   .load:hover { background: rgba(243,181,106,0.16); }
+  #ytPlayer, #ytPlayer iframe { width: 100%; height: 100%; display: block; border: none; }
+
+  /* ---------- YouTube link modal ---------- */
+  .ytOverlay {
+    position: fixed; inset: 0; z-index: 40;
+    display: grid; place-items: center;
+    background: rgba(21,18,29,0.72); backdrop-filter: blur(4px);
+    padding: 20px;
+  }
+  .ytCard {
+    width: 100%; max-width: 400px;
+    background: linear-gradient(180deg, var(--panel), var(--night-2));
+    border: 1px solid var(--line); border-radius: 20px;
+    padding: 28px; text-align: center;
+    box-shadow: 0 30px 80px -30px rgba(0,0,0,0.7);
+  }
+  .ytCard h2 { font-family: var(--serif); font-weight: 500; font-size: 22px; margin: 0 0 6px; }
+  .ytSub { color: var(--muted); font-size: 13px; margin: 0 0 18px; }
+  .ytCard input {
+    width: 100%; background: var(--night); border: 1px solid var(--line); color: var(--ink);
+    font-size: 15px; padding: 12px 14px; border-radius: 12px; outline: none;
+  }
+  .ytCard input:focus { border-color: rgba(243,181,106,0.6); }
+  .ytHint { color: var(--rose); font-size: 12.5px; margin: 10px 0 0; text-align: left; }
+  .ytActions { display: flex; gap: 10px; margin-top: 18px; }
+  .ytActions button {
+    flex: 1; border: none; border-radius: 12px; padding: 12px; font-size: 14px; font-weight: 600;
+  }
+  #ytCancelBtn { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); }
+  #ytLoadBtn { color: #2a1a06; background: linear-gradient(180deg, var(--lamp-soft), var(--lamp)); }
 
   /* tap-to-sync overlay (mobile autoplay guard) */
   .tap {
@@ -552,7 +586,7 @@ const PAGE = `<!DOCTYPE html>
         <input id="room" type="text" placeholder="e.g. our-night-in" autocomplete="off" />
       </div>
       <button class="join" id="joinBtn">Open the room</button>
-      <p class="fineprint">You'll be asked for mic &amp; camera so you can hear each other. Voice starts on, camera starts off — turn it on whenever. Both of you need your own copy of the same video file.</p>
+      <p class="fineprint">You'll be asked for mic &amp; camera so you can hear each other. Voice starts on, camera starts off — turn it on whenever. Once inside, load your own copy of a local file (you'll both need the same one) or paste a YouTube link, which loads for both of you at once.</p>
     </div>
   </section>
 
@@ -578,12 +612,16 @@ const PAGE = `<!DOCTYPE html>
             <div class="titleSub hidden" id="titleSub"></div>
           </div>
           <video id="video" playsinline controls></video>
+          <div id="ytPlayer" class="hidden"></div>
 
           <div class="empty" id="empty">
             <div class="inner">
-              <h2>Load your movie</h2>
-              <p>Pick your own copy from this device. It stays on your machine — only play, pause and seek are shared.</p>
-              <label class="load">Choose file<input id="file" type="file" accept="video/*" hidden></label>
+              <h2>Load something to watch</h2>
+              <p>Pick your own copy from this device, or watch a YouTube video together — either way, playback stays in sync.</p>
+              <div class="sourceChoices">
+                <label class="load">📁 Choose file<input id="file" type="file" accept="video/*" hidden></label>
+                <button class="load" id="ytOpenBtn" type="button">▶️ YouTube</button>
+              </div>
             </div>
           </div>
 
@@ -620,6 +658,7 @@ const PAGE = `<!DOCTYPE html>
           </div>
           <button class="invite" id="chatBtnFS">💬 Chat<span class="badge hidden" id="chatBadgeFS">0</span></button>
           <button class="ctrl" id="camsToggleFS">🫥 Hide cams</button>
+          <button class="ctrl" id="ytOpenBtnFS" type="button">▶️ YouTube</button>
         </div>
       </div>
 
@@ -635,6 +674,7 @@ const PAGE = `<!DOCTYPE html>
 
     <div class="dock">
       <label class="ctrl primary">Load file<input id="file2" type="file" accept="video/*" hidden></label>
+      <button class="ctrl primary" id="ytOpenBtn2" type="button">▶️ YouTube</button>
       <button class="ctrl" id="micBtn">🎙 Mic on</button>
       <button class="ctrl off" id="camBtn">📷 Camera off</button>
       <button class="ctrl" id="camsToggle">🫥 Hide cams</button>
@@ -660,6 +700,19 @@ const PAGE = `<!DOCTYPE html>
       </div>
       <p class="recapQuote hidden" id="recapQuote"></p>
       <button id="recapClose" type="button">Close</button>
+    </div>
+  </div>
+
+  <div class="ytOverlay hidden" id="ytOverlay">
+    <div class="ytCard">
+      <h2>Watch a YouTube video together</h2>
+      <p class="ytSub">Paste a link — it loads for both of you at once.</p>
+      <input id="ytUrl" type="text" placeholder="https://youtube.com/watch?v=…" autocomplete="off" />
+      <p class="ytHint hidden" id="ytHint">Couldn't find a video in that link — try pasting the full URL.</p>
+      <div class="ytActions">
+        <button id="ytCancelBtn" type="button">Cancel</button>
+        <button id="ytLoadBtn" type="button">Load</button>
+      </div>
     </div>
   </div>
 
@@ -860,10 +913,11 @@ const PAGE = `<!DOCTYPE html>
       // ---- playback ----
       case 'control': applyControl(msg); break;
       case 'sync': applyDrift(msg); break;
-      case 'request-sync': if (video.src) sendSnapshot(); break;
+      case 'request-sync': if (media.isReady()) sendSnapshot(); break;
       case 'reaction': registerReaction(msg.emoji, false); floatReaction(msg.emoji, msg.fromName, msg.mega); break;
       case 'chat': addChatMessage(msg.fromName, msg.text, false); bumpUnread(); break;
       case 'meta': state.peerDuration = msg.duration; checkDurationMismatch(); break;
+      case 'load-youtube': loadYouTube(msg.videoId, false); break;
     }
   }
 
@@ -904,6 +958,40 @@ const PAGE = `<!DOCTYPE html>
   }
 
   // ===================================================================
+  //  MEDIA ADAPTER — the exact same sync logic below drives either a local
+  //  <video> file or an embedded YouTube player; only how we read/set time
+  //  and play/pause differs between the two, so everything else (control
+  //  messages, drift correction, snapshots) is written once against the
+  //  media object instead of touching the video element directly.
+  // ===================================================================
+  var ytPlayer = null;
+  var ytReady = false;
+
+  var nativeMedia = {
+    kind: 'video',
+    isReady: function () { return !!video.src; },
+    getTime: function () { return video.currentTime; },
+    setTime: function (t) { video.currentTime = t; },
+    isPaused: function () { return video.paused; },
+    play: function () { return video.play(); },
+    pause: function () { video.pause(); },
+    getDuration: function () { return video.duration; },
+    setRate: function (r) { video.playbackRate = r; }
+  };
+  var youtubeMedia = {
+    kind: 'youtube',
+    isReady: function () { return ytReady && !!ytPlayer; },
+    getTime: function () { return ytPlayer ? ytPlayer.getCurrentTime() : 0; },
+    setTime: function (t) { if (ytPlayer) ytPlayer.seekTo(t, true); },
+    isPaused: function () { return !ytPlayer || ytPlayer.getPlayerState() !== 1; },
+    play: function () { if (ytPlayer) ytPlayer.playVideo(); },
+    pause: function () { if (ytPlayer) ytPlayer.pauseVideo(); },
+    getDuration: function () { return ytPlayer ? ytPlayer.getDuration() : NaN; },
+    setRate: function () { /* YouTube only allows discrete rates — skip the fine easing */ }
+  };
+  var media = nativeMedia;
+
+  // ===================================================================
   //  PLAYBACK SYNC
   // ===================================================================
   // Guard so applying a remote action doesn't echo back as our own event.
@@ -915,32 +1003,32 @@ const PAGE = `<!DOCTYPE html>
     }
   }
 
-  video.addEventListener('play', function () { if (!state.applyingRemote) sendControl('play'); });
-  video.addEventListener('pause', function () { if (!state.applyingRemote) sendControl('pause'); });
-  video.addEventListener('seeked', function () { if (!state.applyingRemote) sendControl('seek'); });
+  video.addEventListener('play', function () { if (!state.applyingRemote && media.kind === 'video') sendControl('play'); });
+  video.addEventListener('pause', function () { if (!state.applyingRemote && media.kind === 'video') sendControl('pause'); });
+  video.addEventListener('seeked', function () { if (!state.applyingRemote && media.kind === 'video') sendControl('seek'); });
 
   function sendControl(kind) {
-    send({ type: 'control', kind: kind, mediaTime: video.currentTime, at: syncedNow() });
+    send({ type: 'control', kind: kind, mediaTime: media.getTime(), at: syncedNow() });
   }
 
   function sendSnapshot() {
     // bring a late joiner to the current spot, playing or paused
-    send({ type: 'control', kind: video.paused ? 'pause' : 'play', mediaTime: video.currentTime, at: syncedNow() });
+    send({ type: 'control', kind: media.isPaused() ? 'pause' : 'play', mediaTime: media.getTime(), at: syncedNow() });
   }
 
   function applyControl(msg) {
-    if (!video.src) { return; }
+    if (!media.isReady()) { return; }
     var delay = Math.max(0, (syncedNow() - msg.at) / 1000);
     withRemote(function () {
       if (msg.kind === 'play') {
-        video.currentTime = msg.mediaTime + delay;
-        var p = video.play();
+        media.setTime(msg.mediaTime + delay);
+        var p = media.play();
         if (p && p.catch) { p.catch(function () { showTap(true); }); }
       } else if (msg.kind === 'pause') {
-        video.currentTime = msg.mediaTime;
-        video.pause();
+        media.setTime(msg.mediaTime);
+        media.pause();
       } else if (msg.kind === 'seek') {
-        video.currentTime = msg.mediaTime + (video.paused ? 0 : delay);
+        media.setTime(msg.mediaTime + (media.isPaused() ? 0 : delay));
       }
     });
   }
@@ -948,36 +1036,53 @@ const PAGE = `<!DOCTYPE html>
   // Only the initiator broadcasts the heartbeat; the other follows it, so the
   // two never fight each other over who's "right".
   setInterval(function () {
-    if (state.initiator && state.connected && !video.paused && video.src) {
-      send({ type: 'sync', mediaTime: video.currentTime, at: syncedNow() });
+    if (state.initiator && state.connected && !media.isPaused() && media.isReady()) {
+      send({ type: 'sync', mediaTime: media.getTime(), at: syncedNow() });
     }
   }, 3000);
 
   function applyDrift(msg) {
-    if (state.initiator || video.paused || !video.src) { return; }
+    if (state.initiator || media.isPaused() || !media.isReady()) { return; }
     var delay = (syncedNow() - msg.at) / 1000;
     var target = msg.mediaTime + delay;
-    var drift = target - video.currentTime;
+    var drift = target - media.getTime();
     var mag = Math.abs(drift);
+    if (media.kind === 'youtube') {
+      // No arbitrary playback-rate easing on YouTube — just hard-correct past a gap.
+      if (mag > 1.5) { withRemote(function () { media.setTime(target); }); }
+      return;
+    }
     if (mag > 1.5) {
-      withRemote(function () { video.currentTime = target; });
-      video.playbackRate = 1;
+      withRemote(function () { media.setTime(target); });
+      media.setRate(1);
     } else if (mag > 0.15) {
       // ease back into sync instead of a visible jump
-      video.playbackRate = drift > 0 ? 1.05 : 0.95;
+      media.setRate(drift > 0 ? 1.05 : 0.95);
       clearTimeout(state.rateResetTimer);
-      state.rateResetTimer = setTimeout(function () { video.playbackRate = 1; }, Math.min(4000, (mag / 0.05) * 1000));
+      state.rateResetTimer = setTimeout(function () { media.setRate(1); }, Math.min(4000, (mag / 0.05) * 1000));
     } else {
-      video.playbackRate = 1;
+      media.setRate(1);
     }
   }
 
   // ===================================================================
   //  FILE PICKING
   // ===================================================================
+  // Switching between a local file and YouTube reuses the same stage, so
+  // only one of <video>/#ytPlayer is ever visible or "live" at a time.
+  function switchToNativeVideo() {
+    if (media.kind === 'youtube' && ytPlayer) {
+      withRemote(function () { ytPlayer.pauseVideo(); });
+    }
+    media = nativeMedia;
+    video.classList.remove('hidden');
+    $('ytPlayer').classList.add('hidden');
+  }
+
   function onPick(e) {
     var f = e.target.files && e.target.files[0];
     if (!f) return;
+    switchToNativeVideo();
     if (video.src) { URL.revokeObjectURL(video.src); }
     state.myDuration = null;
     $('warnBar').classList.add('hidden');
@@ -1041,14 +1146,17 @@ const PAGE = `<!DOCTYPE html>
 
   function showTitleCard(filename) {
     var info = parseMediaTitle(filename);
-    $('titleMain').textContent = (info.type === 'movie' && info.year) ? (info.title + ' (' + info.year + ')') : info.title;
-    var sub = $('titleSub');
-    if (info.type === 'tv') {
-      sub.textContent = 'Season ' + info.season + ' · Episode ' + info.episode;
-      sub.classList.remove('hidden');
-    } else {
-      sub.classList.add('hidden');
-    }
+    showTitleCardDirect((info.type === 'movie' && info.year) ? (info.title + ' (' + info.year + ')') : info.title,
+      info.type === 'tv' ? ('Season ' + info.season + ' · Episode ' + info.episode) : null);
+  }
+
+  // Used directly for YouTube, where we get a real title from oEmbed instead
+  // of having to guess one from a filename.
+  function showTitleCardDirect(main, sub) {
+    $('titleMain').textContent = main;
+    var subEl = $('titleSub');
+    if (sub) { subEl.textContent = sub; subEl.classList.remove('hidden'); }
+    else { subEl.classList.add('hidden'); }
     $('titleCard').classList.remove('hidden');
   }
 
@@ -1070,6 +1178,103 @@ const PAGE = `<!DOCTYPE html>
     }
   }
   $('warnClose').addEventListener('click', function () { $('warnBar').classList.add('hidden'); });
+
+  // ===================================================================
+  //  YOUTUBE — an alternate source alongside local files. One of you
+  //  pastes a link, it loads for both of you, and the same sync engine
+  //  above drives it exactly like a local file would.
+  // ===================================================================
+  var ytApiCallbacks = [];
+  function ensureYouTubeAPI(cb) {
+    if (window.YT && window.YT.Player) { cb(); return; }
+    ytApiCallbacks.push(cb);
+    if (window.YT || document.getElementById('ytApiScript')) { return; } // already loading
+    var s = document.createElement('script');
+    s.id = 'ytApiScript';
+    s.src = 'https://www.youtube.com/iframe_api';
+    document.head.appendChild(s);
+    window.onYouTubeIframeAPIReady = function () {
+      ytApiCallbacks.forEach(function (fn) { fn(); });
+      ytApiCallbacks = [];
+    };
+  }
+
+  function extractYouTubeId(input) {
+    var s = (input || '').trim();
+    if (/^[A-Za-z0-9_-]{11}$/.test(s)) { return s; } // a bare video ID
+    var m = s.match(/[?&]v=([A-Za-z0-9_-]{11})/) ||
+            s.match(/youtu\\.be\\/([A-Za-z0-9_-]{11})/) ||
+            s.match(/\\/(?:embed|shorts)\\/([A-Za-z0-9_-]{11})/);
+    return m ? m[1] : null;
+  }
+
+  function switchToYouTube() {
+    if (media.kind === 'video') { withRemote(function () { video.pause(); }); }
+    media = youtubeMedia;
+    video.classList.add('hidden');
+    $('ytPlayer').classList.remove('hidden');
+    $('empty').classList.add('hidden');
+    $('warnBar').classList.add('hidden');
+    state.myDuration = null;
+  }
+
+  function loadYouTube(videoId, announce) {
+    switchToYouTube();
+    ytReady = false;
+    ensureYouTubeAPI(function () {
+      if (ytPlayer) {
+        ytPlayer.loadVideoById(videoId);
+      } else {
+        ytPlayer = new YT.Player('ytPlayer', {
+          videoId: videoId,
+          playerVars: { playsinline: 1, rel: 0 },
+          events: {
+            onReady: function () {
+              ytReady = true;
+              var d = ytPlayer.getDuration();
+              if (d) { state.myDuration = d; send({ type: 'meta', duration: d }); checkDurationMismatch(); }
+            },
+            onStateChange: function (e) {
+              if (state.applyingRemote) return;
+              if (e.data === 1) { sendControl('play'); }        // YT.PlayerState.PLAYING
+              else if (e.data === 2) { sendControl('pause'); }  // YT.PlayerState.PAUSED
+            }
+          }
+        });
+      }
+    });
+
+    // Fetch the real title via YouTube's public oEmbed endpoint — no API key needed.
+    showTitleCardDirect('YouTube video', null);
+    fetch('https://www.youtube.com/oembed?format=json&url=' + encodeURIComponent('https://www.youtube.com/watch?v=' + videoId))
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) { if (data && data.title) { showTitleCardDirect(data.title, null); } })
+      .catch(function () {});
+
+    if (announce) { send({ type: 'load-youtube', videoId: videoId }); }
+    send({ type: 'request-sync' });
+  }
+
+  function openYtModal() {
+    $('ytHint').classList.add('hidden');
+    $('ytOverlay').classList.remove('hidden');
+    $('ytUrl').focus();
+  }
+  function closeYtModal() { $('ytOverlay').classList.add('hidden'); }
+
+  [$('ytOpenBtn'), $('ytOpenBtn2'), $('ytOpenBtnFS')].forEach(function (b) {
+    b.addEventListener('click', openYtModal);
+  });
+  $('ytCancelBtn').addEventListener('click', closeYtModal);
+  $('ytLoadBtn').addEventListener('click', submitYtUrl);
+  $('ytUrl').addEventListener('keydown', function (e) { if (e.key === 'Enter') submitYtUrl(); });
+
+  function submitYtUrl() {
+    var id = extractYouTubeId($('ytUrl').value);
+    if (!id) { $('ytHint').classList.remove('hidden'); return; }
+    loadYouTube(id, true);
+    closeYtModal();
+  }
 
   // ===================================================================
   //  CONTROLS: mic / camera / reactions / tap-to-sync / invite
@@ -1124,14 +1329,20 @@ const PAGE = `<!DOCTYPE html>
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
     var tag = document.activeElement && document.activeElement.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-    if (!video.src) return;
+    if (!media.isReady()) return;
     e.preventDefault();
+    var t;
     if (e.key === 'ArrowLeft') {
-      video.currentTime = Math.max(0, video.currentTime - SEEK_STEP);
+      t = Math.max(0, media.getTime() - SEEK_STEP);
     } else {
-      var target = video.currentTime + SEEK_STEP;
-      video.currentTime = isNaN(video.duration) ? target : Math.min(target, video.duration);
+      var target = media.getTime() + SEEK_STEP;
+      var dur = media.getDuration();
+      t = isNaN(dur) ? target : Math.min(target, dur);
     }
+    media.setTime(t);
+    // Native <video> fires its own 'seeked' event to broadcast this; YouTube has no
+    // such event, so tell our partner directly.
+    if (media.kind === 'youtube') { sendControl('seek'); }
   });
 
   // 'F' toggles fullscreen for the whole stage — video, webcams, and the
@@ -1143,7 +1354,7 @@ const PAGE = `<!DOCTYPE html>
     if (e.key !== 'f' && e.key !== 'F') return;
     var tag = document.activeElement && document.activeElement.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-    if (!video.src) return;
+    if (!media.isReady()) return;
     e.preventDefault();
     var isFull = document.fullscreenElement || document.webkitFullscreenElement;
     if (!isFull) {
