@@ -237,9 +237,33 @@ const PAGE = `<!DOCTYPE html>
   }
   #video { width: 100%; height: 100%; background:#000; display:block; object-fit: contain; }
 
-  /* 'F' key fullscreen — let the screen fill the display instead of staying boxed at 16:9 */
-  .screen:fullscreen, .screen:-webkit-full-screen {
-    max-width: none; width: 100vw; height: 100vh; aspect-ratio: unset; border-radius: 0; border: none;
+  /* 'F' key fullscreen — the whole stage (video + webcams) fills the display,
+     the video itself stretches edge-to-edge, and chat/reactions become a
+     floating overlay so nothing needs to be reachable "outside" the screen. */
+  .stage:fullscreen, .stage:-webkit-full-screen {
+    width: 100vw; height: 100vh; padding: 0; background: #000;
+  }
+  .stage:fullscreen .screen, .stage:-webkit-full-screen .screen {
+    max-width: none; width: 100%; height: 100%; aspect-ratio: unset; border-radius: 0; border: none;
+  }
+  .floats-fs { position: absolute; inset: 0; pointer-events: none; z-index: 20; }
+  .fsBar { display: none; }
+  .stage:fullscreen .fsBar, .stage:-webkit-full-screen .fsBar {
+    display: flex; align-items: center; justify-content: center; flex-wrap: wrap;
+    gap: 10px; max-width: 92vw;
+    position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%);
+    z-index: 26;
+    background: rgba(21,18,29,0.55);
+    border: 1px solid var(--line);
+    padding: 10px 14px; border-radius: 100px;
+    backdrop-filter: blur(6px);
+    transition: opacity .6s ease;
+  }
+  .stage:fullscreen .chatPanel, .stage:-webkit-full-screen .chatPanel {
+    position: absolute; top: 0; right: 0; bottom: 0;
+    width: 340px; max-width: 80vw;
+    z-index: 25;
+    box-shadow: -30px 0 60px -30px rgba(0,0,0,0.7);
   }
 
   .empty {
@@ -419,8 +443,8 @@ const PAGE = `<!DOCTYPE html>
 
   /* ---------- Ambient dimming when idle (movie-theater feel) ---------- */
   .topbar, .dock { transition: opacity .6s ease; }
-  #app.idle .topbar, #app.idle .dock { opacity: 0.12; }
-  #app.idle .topbar:hover, #app.idle .dock:hover { opacity: 1; }
+  #app.idle .topbar, #app.idle .dock, #app.idle .fsBar { opacity: 0.12; }
+  #app.idle .topbar:hover, #app.idle .dock:hover, #app.idle .fsBar:hover { opacity: 1; }
 </style>
 </head>
 <body>
@@ -488,6 +512,22 @@ const PAGE = `<!DOCTYPE html>
             <div class="off" id="localOff">You</div>
             <div class="tag">You</div>
           </div>
+        </div>
+
+        <div id="floatsFS" class="floats-fs"></div>
+
+        <div class="fsBar" id="fsBar">
+          <button class="ctrl" id="micBtnFS">🎙 Mic on</button>
+          <button class="ctrl off" id="camBtnFS">📷 Camera off</button>
+          <div class="reacts" id="reactsFS">
+            <button data-e="❤️">❤️</button>
+            <button data-e="😂">😂</button>
+            <button data-e="😮">😮</button>
+            <button data-e="😍">😍</button>
+            <button data-e="🥹">🥹</button>
+            <button data-e="👏">👏</button>
+          </div>
+          <button class="invite" id="chatBtnFS">💬 Chat<span class="badge hidden" id="chatBadgeFS">0</span></button>
         </div>
       </div>
 
@@ -863,21 +903,27 @@ const PAGE = `<!DOCTYPE html>
   // ===================================================================
   //  CONTROLS: mic / camera / reactions / tap-to-sync / invite
   // ===================================================================
-  $('micBtn').addEventListener('click', function () {
+  // Wired to two buttons each — the normal dock, and the floating fullscreen
+  // toolbar — so mic/camera stay reachable in either mode.
+  function toggleMic() {
     if (!state.localStream) return;
     var t = state.localStream.getAudioTracks()[0];
     if (!t) return;
     t.enabled = !t.enabled;
     setMicUI(t.enabled, false);
-  });
-  $('camBtn').addEventListener('click', function () {
+  }
+  function toggleCam() {
     if (!state.localStream) return;
     var t = state.localStream.getVideoTracks()[0];
     if (!t) return;
     t.enabled = !t.enabled;
     setCamUI(t.enabled, false);
     $('localOff').classList.toggle('hidden', t.enabled);
-  });
+  }
+  $('micBtn').addEventListener('click', toggleMic);
+  $('camBtn').addEventListener('click', toggleCam);
+  $('micBtnFS').addEventListener('click', toggleMic);
+  $('camBtnFS').addEventListener('click', toggleCam);
 
   // Left/right arrow keys fast-rewind / fast-forward the movie (10s per press).
   // Skipped while typing in a text field so it doesn't fight the room/name inputs.
@@ -896,43 +942,65 @@ const PAGE = `<!DOCTYPE html>
     }
   });
 
-  // 'F' toggles fullscreen for the movie (skipped while typing in a text field).
+  // 'F' toggles fullscreen for the whole stage — video, webcams, and the
+  // floating chat/reactions toolbar all live inside it so nothing becomes
+  // unreachable once the browser chrome disappears.
+  var stageEl = document.querySelector('.stage');
+  var middleEl = document.querySelector('.middle');
   document.addEventListener('keydown', function (e) {
     if (e.key !== 'f' && e.key !== 'F') return;
     var tag = document.activeElement && document.activeElement.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
     if (!video.src) return;
     e.preventDefault();
-    var screenEl = document.querySelector('.screen');
     var isFull = document.fullscreenElement || document.webkitFullscreenElement;
     if (!isFull) {
-      var req = screenEl.requestFullscreen || screenEl.webkitRequestFullscreen;
-      if (req) { req.call(screenEl); }
+      var req = stageEl.requestFullscreen || stageEl.webkitRequestFullscreen;
+      if (req) { req.call(stageEl); }
     } else {
       var exit = document.exitFullscreen || document.webkitExitFullscreen;
       if (exit) { exit.call(document); }
     }
   });
 
+  // The chat panel normally lives beside the video (see .middle); while
+  // fullscreen it moves inside the stage so it can float over the video
+  // instead of vanishing outside the fullscreen element entirely.
+  function onFullscreenChange() {
+    var chatPanel = $('chatPanel');
+    var full = document.fullscreenElement || document.webkitFullscreenElement;
+    if (full === stageEl) {
+      stageEl.appendChild(chatPanel);
+    } else if (chatPanel.parentElement !== middleEl) {
+      middleEl.appendChild(chatPanel);
+    }
+  }
+  document.addEventListener('fullscreenchange', onFullscreenChange);
+  document.addEventListener('webkitfullscreenchange', onFullscreenChange);
+
   // Tap a reaction to send it; hold it down for a bigger "mega" version.
+  // Wired to both the normal dock and the floating fullscreen toolbar.
   var REACT_COMBO_WINDOW = 2500;
-  var reactButtons = document.querySelectorAll('#reacts button');
-  reactButtons.forEach(function (b) {
-    var pressTimer = null, isMega = false;
-    b.addEventListener('contextmenu', function (e) { e.preventDefault(); });
-    b.addEventListener('pointerdown', function () {
-      isMega = false;
-      pressTimer = setTimeout(function () { isMega = true; }, 450);
+  function wireReactButtons(buttons) {
+    buttons.forEach(function (b) {
+      var pressTimer = null, isMega = false;
+      b.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+      b.addEventListener('pointerdown', function () {
+        isMega = false;
+        pressTimer = setTimeout(function () { isMega = true; }, 450);
+      });
+      b.addEventListener('pointerup', function () {
+        clearTimeout(pressTimer);
+        var e = b.getAttribute('data-e');
+        registerReaction(e, true);
+        floatReaction(e, state.name, isMega);
+        send({ type: 'reaction', emoji: e, mega: isMega });
+      });
+      b.addEventListener('pointerleave', function () { clearTimeout(pressTimer); });
     });
-    b.addEventListener('pointerup', function () {
-      clearTimeout(pressTimer);
-      var e = b.getAttribute('data-e');
-      registerReaction(e, true);
-      floatReaction(e, state.name, isMega);
-      send({ type: 'reaction', emoji: e, mega: isMega });
-    });
-    b.addEventListener('pointerleave', function () { clearTimeout(pressTimer); });
-  });
+  }
+  wireReactButtons(document.querySelectorAll('#reacts button'));
+  wireReactButtons(document.querySelectorAll('#reactsFS button'));
 
   // If you and your partner send the same reaction within a couple seconds,
   // celebrate the "in sync" moment with a bigger banner.
@@ -951,11 +1019,19 @@ const PAGE = `<!DOCTYPE html>
     }
   }
 
+  // Reactions render into a viewport-wide layer normally, but that layer lives
+  // outside the fullscreened stage — so while fullscreen, use the copy nested
+  // inside the stage instead, or they'd be invisible.
+  function activeFloats() {
+    var full = document.fullscreenElement || document.webkitFullscreenElement;
+    return (full === stageEl) ? $('floatsFS') : $('floats');
+  }
+
   function showCombo(emoji) {
     var el = document.createElement('div');
     el.className = 'combo-banner';
     el.textContent = emoji + ' In sync ' + emoji;
-    $('floats').appendChild(el);
+    activeFloats().appendChild(el);
     twem(el);
     setTimeout(function () { el.remove(); }, 2300);
   }
@@ -970,6 +1046,7 @@ const PAGE = `<!DOCTYPE html>
     if (willShow) { clearUnread(); $('chatInput').focus(); }
   }
   $('chatBtn').addEventListener('click', toggleChat);
+  $('chatBtnFS').addEventListener('click', toggleChat);
   $('chatClose').addEventListener('click', function () { $('chatPanel').classList.add('hidden'); });
 
   $('chatForm').addEventListener('submit', function (e) {
@@ -1003,13 +1080,14 @@ const PAGE = `<!DOCTYPE html>
   function bumpUnread() {
     if (!$('chatPanel').classList.contains('hidden')) return;
     state.chatUnread = (state.chatUnread || 0) + 1;
-    var b = $('chatBadge');
-    b.textContent = state.chatUnread;
-    b.classList.remove('hidden');
+    [$('chatBadge'), $('chatBadgeFS')].forEach(function (b) {
+      b.textContent = state.chatUnread;
+      b.classList.remove('hidden');
+    });
   }
   function clearUnread() {
     state.chatUnread = 0;
-    $('chatBadge').classList.add('hidden');
+    [$('chatBadge'), $('chatBadgeFS')].forEach(function (b) { b.classList.add('hidden'); });
   }
 
   $('tapBtn').addEventListener('click', function () {
@@ -1029,14 +1107,18 @@ const PAGE = `<!DOCTYPE html>
   //  UI STATE
   // ===================================================================
   function setMicUI(on, missing) {
-    var b = $('micBtn');
-    b.textContent = missing ? '🎙 No mic' : (on ? '🎙 Mic on' : '🔇 Mic off');
-    b.classList.toggle('off', !on);
+    var label = missing ? '🎙 No mic' : (on ? '🎙 Mic on' : '🔇 Mic off');
+    [$('micBtn'), $('micBtnFS')].forEach(function (b) {
+      b.textContent = label;
+      b.classList.toggle('off', !on);
+    });
   }
   function setCamUI(on, missing) {
-    var b = $('camBtn');
-    b.textContent = missing ? '📷 No camera' : (on ? '📷 Camera on' : '📷 Camera off');
-    b.classList.toggle('off', !on);
+    var label = missing ? '📷 No camera' : (on ? '📷 Camera on' : '📷 Camera off');
+    [$('camBtn'), $('camBtnFS')].forEach(function (b) {
+      b.textContent = label;
+      b.classList.toggle('off', !on);
+    });
   }
   function showRemoteVideo(on) {
     $('remoteOff').classList.toggle('hidden', !!on);
@@ -1151,7 +1233,7 @@ const PAGE = `<!DOCTYPE html>
       w.textContent = who;
       el.appendChild(w);
     }
-    $('floats').appendChild(el);
+    activeFloats().appendChild(el);
     twem(el);
     setTimeout(function () { el.remove(); }, 2700);
   }
