@@ -1844,15 +1844,20 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ server });
 const rooms = new Map(); // roomId -> Set<ws>
 
-// Ping every open socket; anything that didn't pong since the last sweep is
-// dead and gets forcibly closed, which fires the same 'close' cleanup below.
+// Anything that hasn't sent us a message in a while is dead — the client
+// already sends an application-level {type:'ping'} every 5s for clock sync,
+// so this piggybacks on that instead of using raw WebSocket ping/pong
+// control frames. Some hosting proxies (this app sits behind one on Render)
+// don't reliably forward those low-level frames, which would make a
+// protocol-level heartbeat wrongly terminate perfectly healthy connections —
+// a real ordinary data message is something every proxy has to forward
+// correctly for the app to work at all.
 setInterval(() => {
+  const cutoff = Date.now() - 20000;
   wss.clients.forEach((ws) => {
-    if (ws.isAlive === false) { return ws.terminate(); }
-    ws.isAlive = false;
-    ws.ping();
+    if (ws.lastSeen && ws.lastSeen < cutoff) { ws.terminate(); }
   });
-}, 25000);
+}, 10000);
 
 function broadcast(room, obj, except) {
   const set = rooms.get(room);
@@ -1870,13 +1875,13 @@ wss.on('connection', (ws) => {
   // closed laptop lid, or a crashed tab can leave a socket "open" from the
   // server's point of view indefinitely, which would both (a) leave the
   // other person's UI stuck looking like their partner is still here, and
-  // (b) block a real rejoin by making the room look falsely full. A
-  // ping/pong heartbeat (below) catches and terminates these within one
-  // or two cycles instead.
-  ws.isAlive = true;
-  ws.on('pong', () => { ws.isAlive = true; });
+  // (b) block a real rejoin by making the room look falsely full. The
+  // heartbeat sweep above catches and terminates these within a couple
+  // of cycles instead.
+  ws.lastSeen = Date.now();
 
   ws.on('message', (buf) => {
+    ws.lastSeen = Date.now();
     let msg;
     try { msg = JSON.parse(buf.toString()); } catch (e) { return; }
 
@@ -1886,7 +1891,7 @@ wss.on('connection', (ws) => {
       if (!set) { set = new Set(); rooms.set(room, set); }
       // Prune anything that already failed a heartbeat before deciding the room is full.
       for (const peer of set) {
-        if (peer.isAlive === false) { set.delete(peer); peer.terminate(); }
+        if (peer.lastSeen && Date.now() - peer.lastSeen > 20000) { set.delete(peer); peer.terminate(); }
       }
       if (set.size >= 2 && !set.has(ws)) {
         ws.send(JSON.stringify({ type: 'full' }));
