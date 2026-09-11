@@ -260,10 +260,15 @@ const PAGE = `<!DOCTYPE html>
     transition: opacity .6s ease;
   }
   .stage:fullscreen .chatPanel, .stage:-webkit-full-screen .chatPanel {
-    position: absolute; top: 0; right: 0; bottom: 0;
-    width: 340px; max-width: 80vw;
+    position: absolute; top: 16px; right: 16px; bottom: 16px;
+    width: 320px; max-width: 78vw;
     z-index: 25;
-    box-shadow: -30px 0 60px -30px rgba(0,0,0,0.7);
+    background: rgba(21,18,29,0.62);
+    backdrop-filter: blur(12px);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 20px 60px -20px rgba(0,0,0,0.7);
   }
 
   .empty {
@@ -1134,7 +1139,22 @@ const PAGE = `<!DOCTYPE html>
     $('remoteTag').textContent = state.peerName || 'Partner';
   }
 
+  // A brief WebSocket blip (flaky wifi, a laptop dimming its network on lock,
+  // a free-tier host hiccup) shouldn't look like your partner left the room.
+  // Give a real disconnect a few seconds to prove itself before showing the
+  // recap card or resetting the session.
+  var DISCONNECT_GRACE_MS = 8000;
+  var disconnectGrace = null;
+
   function onBothHere() {
+    if (disconnectGrace) {
+      // They're back within the grace window — false alarm, resume as if nothing happened.
+      clearTimeout(disconnectGrace);
+      disconnectGrace = null;
+      setStatus(true, state.peerName ? ('Together with ' + state.peerName) : 'Connected');
+      updateRemoteTag();
+      return;
+    }
     if (state.connected) return;
     state.connected = true;
     state.reactionCount = 0;
@@ -1148,11 +1168,16 @@ const PAGE = `<!DOCTYPE html>
     }
   }
   function onAlone() {
-    if (state.connected) { showRecap(); }
-    state.connected = false;
-    setStatus(false, 'Waiting for your person…');
-    showRemoteVideo(false);
-    stopTimer();
+    if (!state.connected || disconnectGrace) return;
+    setStatus(false, 'Reconnecting…');
+    disconnectGrace = setTimeout(function () {
+      disconnectGrace = null;
+      showRecap();
+      state.connected = false;
+      setStatus(false, 'Waiting for your person…');
+      showRemoteVideo(false);
+      stopTimer();
+    }, DISCONNECT_GRACE_MS);
   }
 
   // A soft two-tone chime when your person arrives, so you notice even if the
